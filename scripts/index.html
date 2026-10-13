@@ -3,108 +3,166 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Яндекс.Диск → NAS</title>
+<title>Спасение Яндекс.Диска · MetaClinic</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%235CC8DA'/%3E%3Cstop offset='1' stop-color='%230B7C93'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='18' fill='url%28%23g%29'/%3E%3Cpath d='M17 46V18h6l9 13 9-13h6v28h-6.5V29.5L32 41l-8.5-11.5V46z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
+  /* Фирменная система MetaClinic — как в презентациях Platform / КП / Price */
   :root {
-    --bg: #f6f5f2; --card: #ffffff; --text: #1d1d1b; --muted: #75736d; --line: #e6e3dc;
-    --accent: #2f6fde; --ok: #2e9b5f; --bad: #d1452f; --warn: #c98a12; --bar: #ece9e2;
+    --brand: #15A0BA; --brand-2: #0B7C93; --brand-3: #5CC8DA;
+    --text: #0E3540; --text-soft: #345863; --muted: #6E8B93; --line: #CDE5E9;
+    --bg: #F4FBFC; --card: #FFFFFF; --bg-soft: #EEF8F9; --bg-blue: #DFF3F5; --bar: #E3F2F4;
+    --accent: var(--brand); --ok: #1FB57A; --warn: #E0A63C; --bad: #E05A47;
+    --shadow: 0 24px 60px -28px rgba(11,110,130,.42); --shadow-soft: 0 12px 36px -20px rgba(11,110,130,.28);
+    --radius: 22px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #161614; --card: #1f1f1c; --text: #ecebe6; --muted: #9a978f; --line: #302f2b;
-      --accent: #6c9bff; --ok: #4cc283; --bad: #f0715c; --warn: #e8b24a; --bar: #2b2a26;
+      --text: #E4F3F5; --text-soft: #B5D2D7; --muted: #86A8AF; --line: #1E4650;
+      --bg: #08232A; --card: #0D2E36; --bg-soft: #0A2930; --bg-blue: #0F3842; --bar: #143E48;
+      --accent: #5CC8DA; --ok: #3ED39A; --warn: #F0BC5E; --bad: #F27A68;
+      --shadow: 0 24px 60px -28px rgba(0,0,0,.6); --shadow-soft: 0 12px 36px -20px rgba(0,0,0,.5);
     }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
-         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; }
-  main { max-width: 1080px; margin: 0 auto; padding: 20px 16px 60px; }
-  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 18px; }
-  h1 { font-size: 20px; margin: 0; margin-right: auto; letter-spacing: -0.01em; }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 10px; font-weight: 600; }
-  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px;
+         font: 14px/1.5 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         -webkit-font-smoothing: antialiased; }
+  main { max-width: 1120px; margin: 0 auto; padding: 20px 16px 40px; }
+  a { color: var(--brand-2); }
+  @media (prefers-color-scheme: dark) { a { color: var(--brand-3); } }
+  code { font-size: .92em; }
+
+  /* шапка-обложка */
+  .hero { position: relative; overflow: hidden; border-radius: var(--radius); padding: 22px 24px 18px;
+          background: linear-gradient(135deg, var(--card) 0%, var(--bg-blue) 100%); border: 1px solid var(--line);
+          box-shadow: var(--shadow-soft); margin-bottom: 16px; }
+  .hero::after { content: ""; position: absolute; inset: 0 0 0 auto; width: 58%; pointer-events: none;
+                 background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 220' preserveAspectRatio='none'%3E %3Cg stroke='%23ffffff' stroke-opacity='.55' stroke-width='1'%3E %3Cpolygon points='300,0 380,0 340,60' fill='%23DFF3F5'/%3E%3Cpolygon points='380,0 470,0 420,70' fill='%23CDEFF3'/%3E %3Cpolygon points='470,0 600,0 540,50' fill='%23B9E7EE'/%3E%3Cpolygon points='340,60 420,70 360,140' fill='%23C6ECF1'/%3E %3Cpolygon points='420,70 540,50 500,130' fill='%23A6E0E9'/%3E%3Cpolygon points='540,50 600,0 600,120' fill='%238FD6E2'/%3E %3Cpolygon points='360,140 500,130 430,220' fill='%239EDCE6'/%3E%3Cpolygon points='500,130 600,120 600,220' fill='%236FC8D8'/%3E %3Cpolygon points='430,220 500,130 560,220' fill='%237ECEDB'/%3E%3Cpolygon points='300,0 340,60 260,110' fill='%23EAF7F9'/%3E %3Cpolygon points='260,110 360,140 300,220' fill='%23D4F0F4'/%3E%3Cpolygon points='360,140 430,220 300,220' fill='%23B3E4EC'/%3E %3Cpolygon points='420,70 500,130 360,140' fill='%23B0E3EB'/%3E%3Cpolygon points='540,50 600,120 500,130' fill='%2394D9E4'/%3E %3C/g%3E%3C/svg%3E") right / cover no-repeat; opacity: .9; }
+  @media (prefers-color-scheme: dark) { .hero::after { opacity: .14; } }
+  .hero > * { position: relative; z-index: 1; }
+  .brand-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); }
+  .logo-ico { width: 38px; height: 38px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center;
+              background: linear-gradient(135deg, var(--brand-3), var(--brand-2)); color: #fff; font-weight: 900; font-size: 19px;
+              box-shadow: 0 8px 20px -8px rgba(11,124,147,.7); }
+  .wordmark { font-weight: 800; font-size: 19px; letter-spacing: -.02em; }
+  .wordmark b { color: var(--brand-2); font-weight: 800; }
+  @media (prefers-color-scheme: dark) { .wordmark b { color: var(--brand-3); } }
+  .brand-sep { width: 1px; height: 22px; background: var(--line); }
+  .product { font-weight: 600; color: var(--text-soft); }
+  h1 { font-size: clamp(24px, 3.6vw, 36px); line-height: 1.08; letter-spacing: -.035em; font-weight: 900; margin: 14px 0 14px; max-width: 22ch; }
+  .grad { background: linear-gradient(90deg, var(--brand-2), var(--brand-3)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  @media (prefers-color-scheme: dark) { .grad { background-image: linear-gradient(90deg, #5CC8DA, #A8EAF2); } }
+  .status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  h2 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--brand-2); margin: 30px 0 10px; font-weight: 800; }
+  @media (prefers-color-scheme: dark) { h2 { color: var(--brand-3); } }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 13px;
           background: var(--card); border: 1px solid var(--line); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pill select { padding: 2px 6px; border-radius: 8px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
   .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
-  .card + .card { margin-top: 10px; }
-  textarea, input, select { font: inherit; color: var(--text); background: var(--bg);
-          border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
-  textarea { width: 100%; min-height: 78px; resize: vertical; }
-  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
-  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text);
-           border-radius: 8px; padding: 7px 14px; cursor: pointer; }
-  button:hover { border-color: var(--muted); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 16px 18px; box-shadow: var(--shadow-soft); }
+  .card + .card { margin-top: 12px; }
+  textarea, input, select { font: inherit; color: var(--text); background: var(--bg-soft);
+          border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; }
+  textarea:focus, input:focus, select:focus { outline: 2px solid var(--brand-3); outline-offset: 0; border-color: var(--brand); }
+  textarea { width: 100%; min-height: 84px; resize: vertical; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+  button { font: inherit; font-weight: 600; border: 1px solid var(--line); background: var(--card); color: var(--text);
+           border-radius: 999px; padding: 7px 15px; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+  button:hover { border-color: var(--brand); box-shadow: 0 6px 18px -10px rgba(11,124,147,.6); }
+  button.primary { background: linear-gradient(135deg, var(--brand-3), var(--brand-2)); border-color: transparent; color: #fff;
+                   font-weight: 800; padding: 9px 22px; box-shadow: 0 10px 24px -12px rgba(11,124,147,.8); }
   button.danger { color: var(--bad); }
   .hint { color: var(--muted); font-size: 12.5px; }
   .job-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
-  .job-name { font-weight: 600; font-size: 15px; }
+  .job-name { font-weight: 800; font-size: 16px; letter-spacing: -.01em; }
   .job-sub { color: var(--muted); font-size: 12.5px; word-break: break-all; }
-  .job-actions { margin-left: auto; display: flex; gap: 8px; }
-  .bar { height: 8px; border-radius: 99px; background: var(--bar); overflow: hidden; display: flex; margin: 10px 0 6px; }
-  .bar > .done { background: var(--ok); } .bar > .fail { background: var(--bad); }
-  .bar.thin { height: 5px; margin: 4px 0 0; } .bar.thin > .done { background: var(--accent); }
+  .job-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  .bar { height: 8px; border-radius: 99px; background: var(--bar); overflow: hidden; display: flex; margin: 12px 0 8px; }
+  .bar > .done { background: linear-gradient(90deg, var(--ok), #4CCB97); } .bar > .fail { background: var(--bad); }
+  .bar.thin { height: 5px; margin: 4px 0 0; } .bar.thin > .done { background: linear-gradient(90deg, var(--brand-3), var(--brand-2)); }
   .stats { display: flex; flex-wrap: wrap; gap: 4px 16px; font-variant-numeric: tabular-nums; }
-  .stats .bad { color: var(--bad); font-weight: 600; } .stats .warn { color: var(--warn); }
+  .stats .bad { color: var(--bad); font-weight: 700; } .stats .warn { color: var(--warn); font-weight: 600; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
   td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   tr:last-child td { border-bottom: 0; }
   td.path { word-break: break-all; }
   td.num { white-space: nowrap; text-align: right; }
-  .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 5px;
+  .tag { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
          background: var(--bar); white-space: nowrap; }
   .tag.FILE { color: var(--bad); }
   .pill[hidden] { display: none; }
   .tag.PREVIEW { color: var(--ok); margin-top: 3px; }
   .star { color: var(--warn); }
-  .job-error { margin-top: 6px; padding: 8px 10px; border-radius: 8px; background: var(--bar); color: var(--bad); font-size: 13px; }
-  .done-banner { margin-bottom: 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--ok); line-height: 1.5; }
+  .job-error { margin-top: 8px; padding: 9px 12px; border-radius: 12px; background: var(--bar); color: var(--bad); font-size: 13px; }
+  .done-banner { margin-bottom: 16px; padding: 14px 16px; border-radius: 14px; line-height: 1.55;
+                 background: linear-gradient(135deg, rgba(31,181,122,.10), rgba(92,200,218,.12)); border: 1px solid rgba(31,181,122,.45); }
   .done-banner b { color: var(--ok); }
   .done-banner .hint { margin-top: 4px; }
-  .score { margin-bottom: 14px; }
+  .score { margin-bottom: 16px; }
   .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px 20px; }
-  .tile-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
-  .tile-value { font-size: 28px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.15; }
+  .tile-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+  .tile-value { font-size: 34px; font-weight: 900; letter-spacing: -.035em; font-variant-numeric: tabular-nums; line-height: 1.12; }
+  .tile-value.grad { display: inline-block; }
   .tile-sub { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
   .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
   .sw.saved, .seg.saved { background: var(--ok); }
   .sw.preview, .seg.preview { background: var(--warn); }
   .sw.lost, .seg.lost { background: var(--bad); }
   .sw.left, .seg.left { background: var(--bar); border: 1px solid var(--line); }
-  .stack { display: flex; gap: 2px; height: 12px; margin: 14px 0 8px; }
+  .stack { display: flex; gap: 2px; height: 12px; margin: 16px 0 8px; }
   .seg { border-radius: 4px; min-width: 0; }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
-  @media (max-width: 640px) { .tiles { grid-template-columns: repeat(2, 1fr); row-gap: 12px; } }
-  .job-actions { flex-wrap: wrap; }
   details { margin-top: 10px; }
-  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 600; }
   details table { margin-top: 6px; }
   details button { padding: 3px 10px; font-size: 12.5px; white-space: nowrap; }
   details td.path { word-break: normal; overflow-wrap: anywhere; min-width: 120px; }
   tr.excluded td { color: var(--muted); text-decoration: line-through; }
-  tr.excluded td:last-child { text-decoration: none; } .tag.LIST_FAIL { color: var(--bad); } .tag.EMPTY_SOURCE, .tag.INFECTED { color: var(--warn); }
+  tr.excluded td:last-child { text-decoration: none; }
+  .tag.LIST_FAIL { color: var(--bad); } .tag.EMPTY_SOURCE, .tag.INFECTED { color: var(--warn); }
   .empty { color: var(--muted); padding: 6px 0; }
   .scroll { overflow-x: auto; }
-  a { color: var(--accent); }
-  @media (max-width: 640px) { .hide-sm { display: none; } .job-actions { margin-left: 0; } }
+  footer { max-width: 1120px; margin: 0 auto; padding: 8px 16px 36px; color: var(--muted); font-size: 12.5px;
+           display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+  footer .logo-ico { width: 20px; height: 20px; border-radius: 6px; font-size: 11px; box-shadow: none; }
+  footer a { color: var(--text-soft); font-weight: 600; text-decoration: none; }
+  footer a:hover { color: var(--brand); }
+  @media (max-width: 640px) {
+    .tiles { grid-template-columns: repeat(2, 1fr); row-gap: 12px; }
+    .hide-sm { display: none; } .job-actions { margin-left: 0; }
+    .hero::after { width: 100%; opacity: .35; } .brand-sep, .product { display: none; }
+  }
 </style>
 </head>
 <body>
 <main>
-  <header>
-    <h1>Яндекс.Диск → NAS</h1>
-    <span class="pill" id="nas"><span class="dot"></span>место назначения</span>
-    <span class="pill" id="speed">↓ —</span>
-    <span class="pill" id="awake" hidden></span>
-    <span class="pill" id="rate" title="Обработано файлов в минуту (целые + битые)">— ф/мин</span>
-    <span class="pill" id="eta">осталось —</span>
-    <label class="pill">потоков
-      <select id="workers"><option>1</option><option>2</option><option>4</option><option>6</option>
-        <option>8</option><option>12</option><option>16</option><option>24</option><option>32</option><option>48</option><option>64</option></select></label>
-    <button id="pauseAll">⏸ Пауза</button>
+  <header class="hero">
+    <div class="brand-row">
+      <a class="brand" href="https://meta-clinic.ru" target="_blank" rel="noopener" title="MetaClinic">
+        <span class="logo-ico">M</span><span class="wordmark"><b>Meta</b>Clinic</span></a>
+      <span class="brand-sep"></span>
+      <span class="product"><code>yandex-disk-rescue</code></span>
+    </div>
+    <h1>Спасение данных <span class="grad">с Яндекс.Диска</span></h1>
+    <div class="status-row">
+      <span class="pill" id="nas"><span class="dot"></span>место назначения</span>
+      <span class="pill" id="speed">↓ —</span>
+      <span class="pill" id="awake" hidden></span>
+      <span class="pill" id="rate" title="Обработано файлов в минуту (целые + битые)">— ф/мин</span>
+      <span class="pill" id="eta">осталось —</span>
+      <label class="pill">потоков
+        <select id="workers"><option>1</option><option>2</option><option>4</option><option>6</option>
+          <option>8</option><option>12</option><option>16</option><option>24</option><option>32</option><option>48</option><option>64</option></select></label>
+      <button id="pauseAll">⏸ Пауза</button>
+    </div>
   </header>
 
   <section class="card score" id="score"></section>
@@ -130,6 +188,13 @@
   <h2>Реестр битых <span id="brokenCount"></span> · <a href="/broken.tsv" download="broken.tsv">скачать TSV</a></h2>
   <div class="card scroll" id="broken"></div>
 </main>
+<footer>
+  <a class="brand" href="https://meta-clinic.ru" target="_blank" rel="noopener"><span class="logo-ico">M</span></a>
+  <span>Сделано в <a href="https://meta-clinic.ru" target="_blank" rel="noopener">MetaClinic</a></span>
+  <span>·</span>
+  <a href="https://github.com/GinaliArseny/yandex-disk-rescue" target="_blank" rel="noopener">Открытый код на GitHub</a>
+  <span>· не связано с Яндексом</span>
+</footer>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -277,7 +342,7 @@ function renderScore(jobs) {
       <div><div class="tile-label"><span class="sw left"></span>⏳ В очереди</div>
         <div class="tile-value">${num(leftN)}${more}</div><div class="tile-sub">${human(leftB)}${more}</div></div>
       <div><div class="tile-label">Выживаемость</div>
-        <div class="tile-value">${rate(savedN, checkedN)}</div><div class="tile-sub">файлов · по объёму ${rate(savedB, checkedB)}</div></div>
+        <div class="tile-value grad">${rate(savedN, checkedN)}</div><div class="tile-sub">файлов · по объёму ${rate(savedB, checkedB)}</div></div>
     </div>
     <div class="stack" role="img" aria-label="Спасено ${savedN}, потеряно с превью ${pvN}, потеряно совсем ${lostN - pvN}, в очереди ${leftN}">
       ${segs.filter(g => g[1] > 0).map(([cls, n, label]) =>
