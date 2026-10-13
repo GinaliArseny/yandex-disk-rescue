@@ -1,11 +1,11 @@
 # yandex-disk-rescue
 
-Массовое спасение данных с Яндекс.Диска по публичным ссылкам на NAS, SMB-шару или локальный диск —
+Массовое спасение данных с Яндекс.Диска по публичным ссылкам на NAS, внешний HDD/SSD или этот компьютер —
 с веб-интерфейсом прогресса, реестром битых файлов, превью вместо недоступных фото, md5-проверкой
 и докачкой. Оформлено как **skill для ИИ-агентов** (Claude Code и совместимых), но работает и
 само по себе.
 
-> Bulk-rescue Yandex Disk public links to a NAS / local disk with a progress web UI, a broken-file
+> Bulk-rescue Yandex Disk public links to a NAS, external drive or local disk with a progress web UI, a broken-file
 > registry, preview fallback for unreadable photos, md5 verification and resumable segmented
 > downloads. Packaged as an agent skill; also runs standalone. Docs are in Russian.
 
@@ -20,8 +20,10 @@
 - крупные файлы качает кусками в 8 соединений через Range, с корректной докачкой после обрыва;
 - битые файлы за секунды отсеивает и пишет в реестр с причиной (`NO_RESPONSE`, `PARTIAL`, …),
   для фото сохраняет превью до 1280 px — позже «Повторить битые» докачает оригиналы, если оживут;
+- место назначения выбирается на каждую ссылку: найденные тома (NAS, внешние диски) и этот компьютер
+  со свободным местом; предупреждает, если может не хватить места;
 - приоритет ссылок, исключение папок, табло «спасено / потеряно / с превью», автопауза при
-  отвале NAS.
+  отвале диска или шары.
 
 Только Python 3.8+ stdlib, без зависимостей. Только **публичные** ссылки — токен не нужен.
 
@@ -31,18 +33,19 @@
 git clone https://github.com/GinaliArseny/yandex-disk-rescue ~/.claude/skills/yandex-disk-rescue
 ```
 
-Дальше просто попросите агента: «скачай вот эти ссылки с Яндекс.Диска на NAS» — он подхватит
+Дальше просто попросите агента: «скачай вот эти ссылки с Яндекс.Диска на NAS / внешний диск» — он подхватит
 скилл (`SKILL.md`) и сделает всё по инструкции. Готовый пакет `.skill` — в Releases.
 
 ## Как запустить без агента
 
 ```bash
 mkdir -p ~/yadisk-rescue && cp scripts/app.py scripts/index.html ~/yadisk-rescue/
-NAS_ROOT=/Volumes/home caffeinate -i python3 ~/yadisk-rescue/app.py   # Linux: без caffeinate
+caffeinate -i python3 ~/yadisk-rescue/app.py   # Linux: без caffeinate
 open http://localhost:8765
 ```
 
-Вставьте ссылки на странице — и следите. Переменные: `NAS_ROOT` (куда класть), `PORT` (8765),
+Вставьте ссылки, выберите «Куда качать» — и следите. Переменные: `NAS_ROOT` (место по умолчанию,
+необязательно), `PORT` (8765),
 `DB_PATH` (состояние, по умолчанию `state.db` рядом со скриптом), `HEADERS_TIMEOUT` (5 с).
 HTTP API описан в `SKILL.md`.
 
@@ -57,8 +60,8 @@ HTTP API описан в `SKILL.md`.
 
 ## Важно
 
-- macOS может не пускать процесс агента на сетевые тома (`Operation not permitted`) — тогда
-  сервер запускают из обычного терминала. Подробнее в `SKILL.md`.
+- macOS может не пускать процесс агента на сетевые тома, внешние диски и «Загрузки»/«Документы»
+  (`Operation not permitted`) — тогда сервер запускают из обычного терминала. Подробнее в `SKILL.md`.
 - Не связано с Яндексом; используется только публичный REST API Диска.
 
 ## Лицензия

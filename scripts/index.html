@@ -92,7 +92,7 @@
 <main>
   <header>
     <h1>Яндекс.Диск → NAS</h1>
-    <span class="pill" id="nas"><span class="dot"></span>NAS</span>
+    <span class="pill" id="nas"><span class="dot"></span>место назначения</span>
     <span class="pill" id="speed">↓ —</span>
     <span class="pill" id="rate" title="Обработано файлов в минуту (целые + битые)">— ф/мин</span>
     <span class="pill" id="eta">осталось —</span>
@@ -107,7 +107,9 @@
   <section class="card">
     <textarea id="urls" placeholder="Вставь ссылки на Яндекс.Диск — одну или несколько, можно вперемешку с текстом"></textarea>
     <div class="row">
-      <label>Папка на NAS: <input id="subdir" value="YandexBackup" size="18"></label>
+      <label>Куда качать: <select id="destSel"><option>ищу диски…</option></select></label>
+      <input id="dest" size="34" placeholder="/полный/путь/к/папке" title="Можно поправить вручную">
+      <button id="destRefresh" title="Пересканировать диски">↻</button>
       <label><input type="checkbox" id="priority"> ★ приоритет</label>
       <button class="primary" id="add">Качать</button>
       <span class="hint" id="addMsg">Сначала идут файлы до 200 МБ (фото, документы), крупные — следом. Каждый файл сверяется по md5. Если оригинал фото не отдаётся — рядом кладётся превью 1280 px (<code>*.preview.jpg</code>), а файл остаётся в реестре битых.</span>
@@ -147,7 +149,11 @@ let state = null;
 
 function render(s) {
   state = s;
-  $("nas").innerHTML = `<span class="dot ${s.nas.ok ? "ok" : "bad"}"></span>${esc(s.nas.root)} ${s.nas.ok ? "" : "— нет доступа"}`;
+  const badDests = s.dests.filter(d => !d.ok);
+  $("nas").innerHTML = !s.dests.length ? `<span class="dot"></span>место назначения`
+    : badDests.length ? `<span class="dot bad"></span>недоступно: ${badDests.map(d => esc(d.path)).join(", ")}`
+    : `<span class="dot ok"></span>${s.dests.length === 1 ? esc(s.dests[0].path) : `мест назначения: ${s.dests.length}`}`;
+  $("nas").title = s.dests.map(d => `${d.path}: ${d.ok ? "ok, свободно " + human(d.free) : d.error}`).join("\n");
   $("speed").textContent = "↓ " + human(s.speed) + "/с";
   $("eta").textContent = "осталось " + dur(s.eta);
   if (document.activeElement !== $("workers")) $("workers").value = s.settings.workers;
@@ -166,7 +172,9 @@ function render(s) {
           <button data-act="${j.paused ? "resume" : "pause"}" data-id="${j.id}">${j.paused ? "▶ Продолжить" : "⏸ Пауза"}</button>
         </span>
       </div>
-      <div class="job-sub">→ ${esc(j.dest)}</div>
+      <div class="job-sub">→ ${esc(j.dest)}${j.files_left && j.dest_free != null ? ` · свободно ${human(j.dest_free)}` : ""}
+        ${j.dest_short ? ` <span class="bad">· может не хватить места: осталось скачать до ${human(j.bytes_left)} (часть отсеется как битое)</span>` : ""}
+        ${j.files_left && !j.dest_ok ? ` <span class="bad">· ${esc(j.dest_error)}</span>` : ""}</div>
       <div class="bar"><div class="done" style="width:${pct(j.bytes_done, j.bytes_total)}%"></div>
         <div class="fail" style="width:${pct(j.bytes_failed, j.bytes_total)}%"></div></div>
       <div class="stats">
@@ -265,8 +273,10 @@ async function tick() {
 $("add").onclick = async () => {
   const urls = $("urls").value;
   if (!urls.trim()) return;
-  const res = await post("/api/jobs", {urls, subdir: $("subdir").value, priority: $("priority").checked});
-  $("addMsg").textContent = res.added.length ? `Добавлено ссылок: ${res.added.length}` : "Не нашёл ссылок на Яндекс.Диск";
+  const dest = $("dest").value.trim();
+  if (!dest) { $("addMsg").textContent = "Выбери, куда качать"; return; }
+  const res = await post("/api/jobs", {urls, dest, priority: $("priority").checked});
+  $("addMsg").textContent = res.error || (res.added.length ? `Добавлено ссылок: ${res.added.length} → ${dest}` : "Не нашёл ссылок на Яндекс.Диск");
   if (res.added.length) $("urls").value = "";
   tick();
 };
@@ -282,6 +292,26 @@ $("jobs").addEventListener("toggle", e => {
   if (id) e.target.open ? openDirs.add(id) : openDirs.delete(id);
 }, true);
 
+const kindLabel2 = {network: "🌐 сетевой том", external: "💽 внешний диск", local: "💻 этот компьютер"};
+let destList = [];
+async function loadDests() {
+  const r = await (await fetch("/api/destinations")).json();
+  destList = r.destinations;
+  const current = $("dest").value || r.default || (destList[0] && destList[0].suggested) || "";
+  $("destSel").innerHTML = destList.map((d, i) =>
+    `<option value="${i}" ${d.ok ? "" : "disabled"}>${kindLabel2[d.kind]} · ${esc(d.name)} — ${d.ok ? "свободно " + human(d.free) : esc(d.error)}</option>`).join("")
+    + `<option value="other">Другая папка…</option>`;
+  const match = destList.findIndex(d => current === d.suggested || current.startsWith(d.path + "/"));
+  $("destSel").value = match >= 0 ? String(match) : "other";
+  $("dest").value = current;
+}
+$("destSel").onchange = e => {
+  if (e.target.value === "other") { $("dest").focus(); $("dest").select(); return; }
+  $("dest").value = destList[+e.target.value].suggested;
+};
+$("destRefresh").onclick = loadDests;
+
+loadDests();
 tick();
 setInterval(tick, 2000);
 </script>

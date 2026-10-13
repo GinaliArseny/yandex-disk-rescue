@@ -2,7 +2,7 @@
 """Яндекс.Диск → NAS/диск: локальная качалка публичных ссылок с веб-интерфейсом.
 
 Запуск — из терминальной панели Claude или Terminal.app (нужен доступ к сетевым томам):
-  caffeinate -i python3 app.py          (NAS_ROOT=/путь/к/шаре — куда класть)
+  caffeinate -i python3 app.py          (куда качать — выбирается в интерфейсе)
 Интерфейс: http://localhost:8765
 """
 import collections
@@ -12,8 +12,10 @@ import http.client
 import json
 import os
 import re
+import shutil
 import socket
 import sqlite3
+import subprocess
 import threading
 import time
 import urllib.error
@@ -23,8 +25,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(HERE, "state.db"))
-NAS_ROOT = os.environ.get("NAS_ROOT", "/Volumes/home")
+# Место назначения выбирается в интерфейсе на каждую ссылку (NAS, внешний диск, этот компьютер);
+# NAS_ROOT — только подсказка по умолчанию.
+NAS_ROOT = os.environ.get("NAS_ROOT")
 DEFAULT_SUBDIR = "YandexBackup"
+NETWORK_FS = {"smbfs", "afpfs", "nfs", "nfs4", "cifs", "smb3", "webdav", "fuse.sshfs", "sshfs", "9p"}
+MOUNT_PREFIXES = ("/Volumes/", "/media/", "/run/media/", "/mnt/")
 PORT = int(os.environ.get("PORT", "8765"))
 API = "https://cloud-api.yandex.net/v1/disk/public/resources"
 UA = {"User-Agent": "yadisk-backup/1.0"}
@@ -128,7 +134,7 @@ def is_nas_failure(e):
 def pause_for_nas(e):
     if not settings["paused"]:
         settings["paused"] = True
-        log(f"NAS не принимает запись ({e!r}) — ПАУЗА. Переподключи шару и нажми «Продолжить»")
+        log(f"Место назначения не принимает запись ({e!r}) — ПАУЗА. Подключи диск/шару и нажми «Продолжить»")
 
 
 def api_get(endpoint, **params):
@@ -677,29 +683,109 @@ def broken_tsv():
 
 
 def exporter():
-    """Раз в 30 с кладёт реестр битых на NAS: YandexBackup/_broken.tsv."""
+    """Раз в 30 с кладёт реестр битых в каждое место назначения: <место>/_broken.tsv."""
     last = None
     while True:
         time.sleep(30)
-        try:
-            data = broken_tsv()
-            if data == last:
-                continue
-            out_dir = os.path.join(NAS_ROOT, DEFAULT_SUBDIR)
-            if os.path.isdir(out_dir):
-                tmp = os.path.join(out_dir, "._broken.tsv.tmp")
-                with open(tmp, "w", encoding="utf-8") as fh:
-                    fh.write(data)
-                os.replace(tmp, os.path.join(out_dir, "_broken.tsv"))
-                last = data
-        except Exception as e:
-            log(f"не смог выгрузить реестр на NAS: {e!r}")
+        data = broken_tsv()
+        if data == last:
+            continue
+        for out_dir in {r["base"] for r in q("SELECT DISTINCT base FROM jobs")}:
+            try:
+                if os.path.isdir(out_dir):
+                    tmp = os.path.join(out_dir, "._broken.tsv.tmp")
+                    with open(tmp, "w", encoding="utf-8") as fh:
+                        fh.write(data)
+                    os.replace(tmp, os.path.join(out_dir, "_broken.tsv"))
+            except Exception as e:
+                log(f"не смог выгрузить реестр в {out_dir}: {e!r}")
+        last = data
+
+
+# ---------- Места назначения ----------
+
+_probes = {}  # путь → {"ts", "busy", "started", "result"}
+_probes_lock = threading.Lock()
+
+
+def _probe_worker(path):
+    try:
+        existing = path
+        while not os.path.exists(existing):  # папки ещё нет — смотрим на ближайшего существующего родителя
+            existing = os.path.dirname(existing.rstrip("/")) or "/"
+        usage = shutil.disk_usage(existing)
+        writable = os.access(existing, os.W_OK)
+        res = {"ok": writable, "free": usage.free, "total": usage.total,
+               "error": None if writable else "нет прав на запись"}
+    except OSError as e:
+        res = {"ok": False, "free": None, "total": None, "error": str(e)}
+    with _probes_lock:
+        _probes[path].update(result=res, ts=time.time(), busy=False)
+
+
+def probe_dir(path, max_age=10, wait=1.5):
+    """Свободно ли и пишется ли. Проверка — в отдельном потоке: отвалившаяся SMB-шара вешает stat
+    намертво, и тогда зависает только этот поток, а мы честно отвечаем «не отвечает»."""
+    with _probes_lock:
+        p = _probes.setdefault(path, {"ts": 0, "busy": False, "started": 0, "result": None})
+        if not p["busy"] and time.time() - p["ts"] > max_age:
+            p.update(busy=True, started=time.time())
+            threading.Thread(target=_probe_worker, args=(path,), daemon=True).start()
+    end = time.time() + wait
+    while time.time() < end:
+        with _probes_lock:
+            if not _probes[path]["busy"]:
+                break
+        time.sleep(0.05)
+    with _probes_lock:
+        p = dict(_probes[path])
+    if p["busy"] and time.time() - p["started"] > 5:
+        return {"ok": False, "free": None, "total": None, "error": "не отвечает — том отвалился?"}
+    return p["result"] or {"ok": False, "free": None, "total": None, "error": "проверяю…"}
+
+
+def mount_types():
+    """Точка монтирования → тип ФС. Читаем таблицу ядра через `mount` — сами тома при этом не трогаем."""
+    types = {}
+    try:
+        out = subprocess.run(["mount"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return types
+    for line in out.splitlines():
+        m = re.match(r"^.+? on (.+?) type (\S+)", line) or re.match(r"^.+? on (.+?) \(([^,)]+)", line)  # Linux | macOS
+        if m:
+            types[m[1]] = m[2]
+    return types
+
+
+def list_destinations():
+    """Куда можно качать: сетевые тома, внешние диски, этот компьютер — со свободным местом."""
+    dests = []
+    for mount, fstype in mount_types().items():
+        name = os.path.basename(mount.rstrip("/"))
+        if not mount.startswith(MOUNT_PREFIXES) or name.startswith(("com.apple", ".timemachine")) or name == "Recovery":
+            continue
+        kind = "network" if fstype in NETWORK_FS else "external"
+        dests.append({"path": mount, "name": name, "kind": kind, "fstype": fstype,
+                      "suggested": os.path.join(mount, DEFAULT_SUBDIR), **probe_dir(mount)})
+    home = os.path.expanduser("~")
+    # не ~/Downloads и не ~/Documents: на macOS они под защитой приватности, как и сетевые тома
+    dests.append({"path": home, "name": "домашняя папка", "kind": "local", "fstype": "",
+                  "suggested": os.path.join(home, DEFAULT_SUBDIR), **probe_dir(home)})
+    order = {"network": 0, "external": 1, "local": 2}
+    return sorted(dests, key=lambda d: (order[d["kind"]], d["name"]))
+
+
+def default_dest():
+    row = q("SELECT v FROM kv WHERE k='last_dest'")
+    if row:
+        return row[0]["v"]
+    if NAS_ROOT:
+        return os.path.join(NAS_ROOT, DEFAULT_SUBDIR)
+    return None  # интерфейс подставит первый найденный том или этот компьютер
 
 
 # ---------- Состояние и действия ----------
-
-def nas_ok():
-    return os.path.ismount(NAS_ROOT) and os.access(NAS_ROOT, os.W_OK)
 
 
 def state():
@@ -727,8 +813,19 @@ def state():
             files_preview=previews.get(j["id"], 0),
             bytes_total=sum(r["b"] for r in counted), bytes_done=b("ok") + b("skip") + live_done[j["id"]],
             bytes_failed=b("failed"),
+            bytes_left=max(0, b("queued") + b("active") - live_done[j["id"]]),
         )
-        left += b("queued") + b("active") - live_done[j["id"]]
+        left += j["bytes_left"]
+    # места назначения ссылок, где ещё есть что качать: доступны ли и хватит ли места
+    dests = {}
+    for j in jobs:
+        if j["files_left"]:
+            d = dests.setdefault(j["base"], dict(probe_dir(j["base"]), path=j["base"], need=0))
+            d["need"] += j["bytes_left"]
+    for j in jobs:
+        d = dests.get(j["base"]) or {}
+        j.update(dest_ok=d.get("ok", True), dest_free=d.get("free"), dest_error=d.get("error"),
+                 dest_short=bool(d.get("free") is not None and d["need"] > d["free"]))
     speed = counter["speed"]
     return {
         "jobs": jobs,
@@ -736,7 +833,7 @@ def state():
         "speed": speed,
         "eta": left / speed if speed > 1024 else None,
         "settings": settings,
-        "nas": {"root": NAS_ROOT, "ok": nas_ok()},
+        "dests": list(dests.values()),
         "broken": broken_rows(300),
         "broken_total": q("SELECT (SELECT COUNT(*) FROM files WHERE status='failed')"
                           " + (SELECT COUNT(*) FROM problems) n")[0]["n"],
@@ -746,8 +843,23 @@ def state():
 LINK = re.compile(r"(?:https?://)?(?:disk\.yandex\.[a-z]+|disk\.360\.yandex\.[a-z]+|yadi\.sk)/[^\s<>\"']+")
 
 
-def add_jobs(text, subdir, priority=False):
-    base = os.path.join(NAS_ROOT, safe_rel(subdir or "") or DEFAULT_SUBDIR)
+def add_jobs(text, dest=None, priority=False, subdir=None):
+    """dest — абсолютный путь, куда класть (выбор пользователя); subdir — старый вариант API относительно NAS_ROOT."""
+    if not dest:
+        root = NAS_ROOT or os.path.expanduser("~")
+        dest = os.path.join(root, safe_rel(subdir or "") or DEFAULT_SUBDIR)
+    base = os.path.normpath(os.path.expanduser(dest.strip()))
+    if not os.path.isabs(base):
+        return {"added": [], "error": f"Нужен полный путь к папке, а не «{dest}»"}
+    try:
+        os.makedirs(base, exist_ok=True)
+        probe = os.path.join(base, ".write_test")
+        with open(probe, "w") as fh:
+            fh.write("ok")
+        os.remove(probe)
+    except OSError as e:
+        return {"added": [], "error": f"Не могу писать в {base}: {e.strerror or e}"}
+    x("INSERT OR REPLACE INTO kv(k, v) VALUES('last_dest', ?)", base)
     added = []
     for raw in LINK.findall(text or ""):
         url = raw.rstrip(".,;)»")
@@ -845,6 +957,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, fh.read(), "text/html; charset=utf-8")
         elif self.path == "/api/state":
             self.send(200, json.dumps(state(), ensure_ascii=False))
+        elif self.path == "/api/destinations":
+            self.send(200, json.dumps({"destinations": list_destinations(), "default": default_dest()},
+                                      ensure_ascii=False))
         elif self.path == "/broken.tsv":
             self.send(200, broken_tsv(), "text/tab-separated-values; charset=utf-8")
         else:
@@ -857,7 +972,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         m = re.fullmatch(r"/api/jobs/(\d+)/(pause|resume|retry|exclude|include|prioritize|unprioritize)", self.path)
         if self.path == "/api/jobs":
-            res = add_jobs(body.get("urls"), body.get("subdir"), bool(body.get("priority")))
+            res = add_jobs(body.get("urls"), body.get("dest"), bool(body.get("priority")), body.get("subdir"))
         elif m and m[2] in ("exclude", "include"):
             res = set_excluded(int(m[1]), body.get("path"), m[2] == "exclude")
         elif m:
@@ -884,7 +999,8 @@ def main():
     ensure_workers(settings["workers"])
     threading.Thread(target=sampler, daemon=True).start()
     threading.Thread(target=exporter, daemon=True).start()
-    log(f"Интерфейс: http://localhost:{PORT}  ·  NAS: {NAS_ROOT} ({'ok' if nas_ok() else 'НЕТ ДОСТУПА'})")
+    places = ", ".join(f"{d['name']} ({'ok' if d['ok'] else d['error']})" for d in list_destinations())
+    log(f"Интерфейс: http://localhost:{PORT}  ·  куда можно качать: {places}")
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
 
 
