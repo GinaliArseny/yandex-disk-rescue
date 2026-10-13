@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Яндекс.Диск → NAS/диск: локальная качалка публичных ссылок с веб-интерфейсом.
 
-Запуск — из терминальной панели Claude или Terminal.app (нужен доступ к сетевым томам):
-  caffeinate -i python3 app.py          (куда качать — выбирается в интерфейсе)
+Запуск (macOS/Linux — python3, Windows — py):
+  python3 app.py        куда качать — выбирается в интерфейсе; пока есть что качать, компьютер не уснёт
 Интерфейс: http://localhost:8765
 """
 import collections
@@ -17,6 +17,7 @@ import socket
 import ssl
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -46,8 +47,8 @@ SEG_MIN = 32 * 1024 * 1024  # файлы крупнее качаем куска�
 SEG_COUNT = 8
 SEG_SLOTS = threading.BoundedSemaphore(48)  # общий лимит соединений под куски на все файлы
 # smbfs на Mac однажды намертво завис при ~100 параллельных записях + сетевом сбое — держим нагрузку умеренной
-NAS_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOSPC, errno.EIO, errno.ESTALE,
-              errno.ENOTCONN, errno.EDQUOT, errno.ENOENT}
+NAS_ERRNOS = {getattr(errno, n) for n in ("EACCES", "EPERM", "EROFS", "ENOSPC", "EIO", "ESTALE",
+                                         "ENOTCONN", "EDQUOT", "ENOENT") if hasattr(errno, n)}  # в Windows не все есть
 PREVIEW_SIZES = ("XXXL", "XXL", "XL", "L")  # 1280 px максимум; меньшие — если крупное не закэшировано
 PREVIEW_NONE, PREVIEW_SAVED, PREVIEW_NA, PREVIEW_BUSY = 0, 1, 2, 9
 
@@ -174,11 +175,17 @@ def api_get(endpoint, **params):
 
 
 BAD_CHARS = re.compile(r'[<>:"\\|?*\x00-\x1f]')
+RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+def _safe_part(part):
+    part = BAD_CHARS.sub("_", part).rstrip(" .") or "_"
+    return "_" + part if part.split(".")[0].upper() in RESERVED else part
 
 
 def safe_rel(rel):
-    """Имена с символами, которые SMB не принимает, приводим к безопасным."""
-    return "/".join(BAD_CHARS.sub("_", p).rstrip(" .") or "_" for p in rel.strip("/").split("/") if p)
+    """Имена, которые не примут SMB или Windows (символы <>:"|?*, CON, NUL…), приводим к безопасным."""
+    return "/".join(_safe_part(p) for p in rel.strip("/").split("/") if p)
 
 
 def add_problem(job_id, kind, rel, path, size, reason):
@@ -673,6 +680,60 @@ def ensure_workers(n):
             _started_workers += 1
 
 
+class KeepAwake:
+    """Не даём компьютеру уснуть, пока есть что качать; всё скачали или пауза — снова можно спать.
+    macOS: caffeinate -w (умрёт вместе с нами), Linux: systemd-inhibit, Windows: SetThreadExecutionState
+    (действует на вызвавший поток, поэтому включаем и выключаем только из keep_awake_loop)."""
+
+    def __init__(self):
+        self.proc, self.on, self.how, self.error = None, False, None, None
+
+    def set(self, want):
+        if want == self.on:
+            return
+        try:
+            self._start() if want else self._stop()
+            self.on, self.error = want, None
+        except Exception as e:
+            self.error = f"{e}"
+            log(f"не смог {'запретить' if want else 'разрешить'} сон: {e!r}")
+
+    def _start(self):
+        if sys.platform == "darwin" and shutil.which("caffeinate"):
+            self.proc, self.how = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())]), "caffeinate"
+        elif sys.platform.startswith("linux") and shutil.which("systemd-inhibit"):
+            watch = f"while kill -0 {os.getpid()} 2>/dev/null; do sleep 20; done"  # отпустит, если нас убьют
+            self.proc = subprocess.Popen(["systemd-inhibit", "--what=sleep:idle", "--who=yandex-disk-rescue",
+                                          "--why=Идёт загрузка с Яндекс.Диска", "--mode=block", "sh", "-c", watch])
+            self.how = "systemd-inhibit"
+        elif sys.platform == "win32":
+            import ctypes
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)  # CONTINUOUS | SYSTEM_REQUIRED
+            self.how = "Windows"
+        else:
+            raise RuntimeError("на этой системе не нашёл, чем запретить сон")
+
+    def _stop(self):
+        if self.proc:
+            self.proc.terminate()
+            self.proc = None
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+
+
+KEEP_AWAKE = KeepAwake()
+
+
+def keep_awake_loop():
+    while True:
+        busy = not settings["paused"] and bool(
+            q("SELECT 1 FROM files WHERE status IN ('queued', 'active') LIMIT 1")
+            or q("SELECT 1 FROM jobs WHERE walk_status IN ('pending', 'walking') LIMIT 1"))
+        KEEP_AWAKE.set(busy)
+        time.sleep(15)
+
+
 def sampler():
     prev, prev_t = 0, time.time()
     while True:
@@ -773,6 +834,8 @@ def probe_dir(path, max_age=10, wait=1.5):
 def mount_types():
     """Точка монтирования → тип ФС. Читаем таблицу ядра через `mount` — сами тома при этом не трогаем."""
     types = {}
+    if sys.platform == "win32":
+        return types  # в Windows диски перечисляет windows_drives()
     try:
         out = subprocess.run(["mount"], capture_output=True, text=True, timeout=5).stdout
     except (OSError, subprocess.SubprocessError):
@@ -784,9 +847,26 @@ def mount_types():
     return types
 
 
+def windows_drives():
+    """Буквы дисков Windows → вид: сетевой, съёмный или ещё один внутренний диск (кроме системного)."""
+    import ctypes
+    system = (os.environ.get("SystemDrive") or "C:").upper()
+    drives = {}
+    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        root = f"{letter}:\\"
+        kind = ctypes.windll.kernel32.GetDriveTypeW(root)  # 2 съёмный, 3 жёсткий, 4 сетевой, 5 CD
+        if kind in (2, 3, 4) and f"{letter}:" != system:
+            drives[root] = "network" if kind == 4 else "external"
+    return drives
+
+
 def list_destinations():
     """Куда можно качать: сетевые тома, внешние диски, этот компьютер — со свободным местом."""
     dests = []
+    if sys.platform == "win32":
+        for root, kind in windows_drives().items():
+            dests.append({"path": root, "name": f"диск {root[:2]}", "kind": kind, "fstype": "",
+                          "suggested": os.path.join(root, DEFAULT_SUBDIR), **probe_dir(root)})
     for mount, fstype in mount_types().items():
         name = os.path.basename(mount.rstrip("/"))
         if not mount.startswith(MOUNT_PREFIXES) or name.startswith(("com.apple", ".timemachine")) or name == "Recovery":
@@ -860,6 +940,7 @@ def state():
         "eta": left / speed if speed > 1024 else None,
         "settings": settings,
         "dests": list(dests.values()),
+        "awake": {"on": KEEP_AWAKE.on, "how": KEEP_AWAKE.how, "error": KEEP_AWAKE.error},
         "broken": broken_rows(300),
         "broken_total": q("SELECT (SELECT COUNT(*) FROM files WHERE status='failed')"
                           " + (SELECT COUNT(*) FROM problems) n")[0]["n"],
@@ -1064,6 +1145,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):  # консоль Windows не во всякой кодировке примет «→» и кириллицу
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     init_db()
     for j in q("SELECT id FROM jobs WHERE walk_status != 'done'"):
         x("DELETE FROM problems WHERE job_id=? AND kind='LIST_FAIL'", j["id"])
@@ -1072,6 +1158,7 @@ def main():
     ensure_workers(settings["workers"])
     threading.Thread(target=sampler, daemon=True).start()
     threading.Thread(target=exporter, daemon=True).start()
+    threading.Thread(target=keep_awake_loop, daemon=True).start()
     places = ", ".join(f"{d['name']} ({'ok' if d['ok'] else d['error']})" for d in list_destinations())
     log(f"Интерфейс: http://localhost:{PORT}  ·  куда можно качать: {places}")
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

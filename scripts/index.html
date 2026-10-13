@@ -98,6 +98,7 @@
     <h1>Яндекс.Диск → NAS</h1>
     <span class="pill" id="nas"><span class="dot"></span>место назначения</span>
     <span class="pill" id="speed">↓ —</span>
+    <span class="pill" id="awake" hidden></span>
     <span class="pill" id="rate" title="Обработано файлов в минуту (целые + битые)">— ф/мин</span>
     <span class="pill" id="eta">осталось —</span>
     <label class="pill">потоков
@@ -162,6 +163,12 @@ function render(s) {
   $("eta").textContent = "осталось " + dur(s.eta);
   if (document.activeElement !== $("workers")) $("workers").value = s.settings.workers;
   renderScore(s.jobs);
+  const aw = s.awake || {};
+  $("awake").hidden = !aw.on && !aw.error;
+  $("awake").textContent = aw.on ? "☕ сон отключён" : "⚠ сон не отключён";
+  $("awake").title = aw.on
+    ? "Пока есть что качать, компьютер не уснёт сам. Всё скачается или пауза — снова сможет спать. На ноутбуке не закрывайте крышку: тогда он уснёт всё равно."
+    : `Не получилось запретить сон (${aw.error}). Не давайте компьютеру уснуть вручную.`;
   $("pauseAll").textContent = s.settings.paused ? "▶ Продолжить" : "⏸ Пауза";
 
   $("jobs").innerHTML = s.jobs.length ? s.jobs.map(j => {
