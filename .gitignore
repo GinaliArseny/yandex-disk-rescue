@@ -1,0 +1,6 @@
+state.db*
+*.part
+*.part.json
+__pycache__/
+*.skill
+.DS_Store

@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Яндекс.Диск → NAS</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --text: #1d1d1b; --muted: #75736d; --line: #e6e3dc;
+    --accent: #2f6fde; --ok: #2e9b5f; --bad: #d1452f; --warn: #c98a12; --bar: #ece9e2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --card: #1f1f1c; --text: #ecebe6; --muted: #9a978f; --line: #302f2b;
+      --accent: #6c9bff; --ok: #4cc283; --bad: #f0715c; --warn: #e8b24a; --bar: #2b2a26;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; }
+  main { max-width: 1080px; margin: 0 auto; padding: 20px 16px 60px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 18px; }
+  h1 { font-size: 20px; margin: 0; margin-right: auto; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 10px; font-weight: 600; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px;
+          background: var(--card); border: 1px solid var(--line); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card + .card { margin-top: 10px; }
+  textarea, input, select { font: inherit; color: var(--text); background: var(--bg);
+          border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  textarea { width: 100%; min-height: 78px; resize: vertical; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text);
+           border-radius: 8px; padding: 7px 14px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { color: var(--bad); }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  .job-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+  .job-name { font-weight: 600; font-size: 15px; }
+  .job-sub { color: var(--muted); font-size: 12.5px; word-break: break-all; }
+  .job-actions { margin-left: auto; display: flex; gap: 8px; }
+  .bar { height: 8px; border-radius: 99px; background: var(--bar); overflow: hidden; display: flex; margin: 10px 0 6px; }
+  .bar > .done { background: var(--ok); } .bar > .fail { background: var(--bad); }
+  .bar.thin { height: 5px; margin: 4px 0 0; } .bar.thin > .done { background: var(--accent); }
+  .stats { display: flex; flex-wrap: wrap; gap: 4px 16px; font-variant-numeric: tabular-nums; }
+  .stats .bad { color: var(--bad); font-weight: 600; } .stats .warn { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.path { word-break: break-all; }
+  td.num { white-space: nowrap; text-align: right; }
+  .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 5px;
+         background: var(--bar); white-space: nowrap; }
+  .tag.FILE { color: var(--bad); }
+  .pill[hidden] { display: none; }
+  .tag.PREVIEW { color: var(--ok); margin-top: 3px; }
+  .star { color: var(--warn); }
+  .score { margin-bottom: 14px; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px 20px; }
+  .tile-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
+  .tile-value { font-size: 28px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.15; }
+  .tile-sub { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .sw.saved, .seg.saved { background: var(--ok); }
+  .sw.preview, .seg.preview { background: var(--warn); }
+  .sw.lost, .seg.lost { background: var(--bad); }
+  .sw.left, .seg.left { background: var(--bar); border: 1px solid var(--line); }
+  .stack { display: flex; gap: 2px; height: 12px; margin: 14px 0 8px; }
+  .seg { border-radius: 4px; min-width: 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  @media (max-width: 640px) { .tiles { grid-template-columns: repeat(2, 1fr); row-gap: 12px; } }
+  .job-actions { flex-wrap: wrap; }
+  details { margin-top: 10px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  details table { margin-top: 6px; }
+  details button { padding: 3px 10px; font-size: 12.5px; white-space: nowrap; }
+  details td.path { word-break: normal; overflow-wrap: anywhere; min-width: 120px; }
+  tr.excluded td { color: var(--muted); text-decoration: line-through; }
+  tr.excluded td:last-child { text-decoration: none; } .tag.LIST_FAIL { color: var(--bad); } .tag.EMPTY_SOURCE, .tag.INFECTED { color: var(--warn); }
+  .empty { color: var(--muted); padding: 6px 0; }
+  .scroll { overflow-x: auto; }
+  a { color: var(--accent); }
+  @media (max-width: 640px) { .hide-sm { display: none; } .job-actions { margin-left: 0; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Яндекс.Диск → NAS</h1>
+    <span class="pill" id="nas"><span class="dot"></span>NAS</span>
+    <span class="pill" id="speed">↓ —</span>
+    <span class="pill" id="rate" title="Обработано файлов в минуту (целые + битые)">— ф/мин</span>
+    <span class="pill" id="eta">осталось —</span>
+    <label class="pill">потоков
+      <select id="workers"><option>1</option><option>2</option><option>4</option><option>6</option>
+        <option>8</option><option>12</option><option>16</option><option>24</option><option>32</option><option>48</option><option>64</option></select></label>
+    <button id="pauseAll">⏸ Пауза</button>
+  </header>
+
+  <section class="card score" id="score"></section>
+
+  <section class="card">
+    <textarea id="urls" placeholder="Вставь ссылки на Яндекс.Диск — одну или несколько, можно вперемешку с текстом"></textarea>
+    <div class="row">
+      <label>Папка на NAS: <input id="subdir" value="YandexBackup" size="18"></label>
+      <label><input type="checkbox" id="priority"> ★ приоритет</label>
+      <button class="primary" id="add">Качать</button>
+      <span class="hint" id="addMsg">Сначала идут файлы до 200 МБ (фото, документы), крупные — следом. Каждый файл сверяется по md5. Если оригинал фото не отдаётся — рядом кладётся превью 1280 px (<code>*.preview.jpg</code>), а файл остаётся в реестре битых.</span>
+    </div>
+  </section>
+
+  <h2>Ссылки</h2>
+  <div id="jobs"></div>
+
+  <h2>Сейчас качается</h2>
+  <div class="card scroll" id="active"></div>
+
+  <h2>Реестр битых <span id="brokenCount"></span> · <a href="/broken.tsv" download="broken.tsv">скачать TSV</a></h2>
+  <div class="card scroll" id="broken"></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const units = ["Б","КБ","МБ","ГБ","ТБ"];
+function human(n) { n = +n || 0; let i = 0; while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(n < 10 ? 2 : 1) : n.toFixed(0)) + " " + units[i]; }
+function dur(s) { if (s == null) return "—"; s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h} ч ${m} мин` : m ? `${m} мин` : `${s} с`; }
+const num = n => (+n || 0).toLocaleString("ru-RU");
+const pct = (a, b) => b ? Math.min(100, a / b * 100) : 0;
+const walkLabel = {pending: "обход ждёт", walking: "обход идёт", done: "обход завершён", failed: "обход упал"};
+const kindLabel = {FILE: "файл", LIST_FAIL: "папка", EMPTY_SOURCE: "0 байт", INFECTED: "вирус"};
+
+async function post(url, body) {
+  const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+  return r.json();
+}
+
+let state = null;
+
+function render(s) {
+  state = s;
+  $("nas").innerHTML = `<span class="dot ${s.nas.ok ? "ok" : "bad"}"></span>${esc(s.nas.root)} ${s.nas.ok ? "" : "— нет доступа"}`;
+  $("speed").textContent = "↓ " + human(s.speed) + "/с";
+  $("eta").textContent = "осталось " + dur(s.eta);
+  if (document.activeElement !== $("workers")) $("workers").value = s.settings.workers;
+  renderScore(s.jobs);
+  $("pauseAll").textContent = s.settings.paused ? "▶ Продолжить" : "⏸ Пауза";
+
+  $("jobs").innerHTML = s.jobs.length ? s.jobs.map(j => {
+    const failedN = j.files_failed + j.problems;
+    return `<div class="card">
+      <div class="job-head">
+        <span class="job-name">${j.priority ? `<span class="star">★</span> ` : ""}${esc(j.name || "получаю список…")}</span>
+        <span class="job-sub">${esc(j.url)}</span>
+        <span class="job-actions">
+          ${failedN ? `<button data-act="retry" data-id="${j.id}">↻ Повторить битые</button>` : ""}
+          <button data-act="${j.priority ? "unprioritize" : "prioritize"}" data-id="${j.id}">${j.priority ? "☆ Снять приоритет" : "★ В приоритет"}</button>
+          <button data-act="${j.paused ? "resume" : "pause"}" data-id="${j.id}">${j.paused ? "▶ Продолжить" : "⏸ Пауза"}</button>
+        </span>
+      </div>
+      <div class="job-sub">→ ${esc(j.dest)}</div>
+      <div class="bar"><div class="done" style="width:${pct(j.bytes_done, j.bytes_total)}%"></div>
+        <div class="fail" style="width:${pct(j.bytes_failed, j.bytes_total)}%"></div></div>
+      <div class="stats">
+        <span>${human(j.bytes_done)} из ${human(j.bytes_total)}${j.walk_status !== "done" ? "+" : ""}</span>
+        <span>файлов ${num(j.files_ok)} / ${num(j.files_total)}${j.walk_status !== "done" ? "+" : ""}</span>
+        <span>в очереди ${num(j.files_left)}</span>
+        ${j.files_failed ? `<span class="bad">битых ${num(j.files_failed)}</span>` : ""}
+        ${j.files_preview ? `<span class="warn">из них с превью ${num(j.files_preview)}</span>` : ""}
+        ${j.files_excluded ? `<span class="hint">исключено ${num(j.files_excluded)} ф., ${human(j.bytes_excluded)}</span>` : ""}
+        ${j.problems ? `<span class="warn">замечаний ${num(j.problems)}</span>` : ""}
+        <span class="hint">${walkLabel[j.walk_status] || j.walk_status} · папок ${num(j.walk_dirs)}${j.paused ? " · на паузе" : ""}</span>
+        ${j.error ? `<span class="bad">${esc(j.error)}</span>` : ""}
+      </div>
+      ${j.dirs.length ? `<details data-job="${j.id}" ${openDirs.has(j.id) ? "open" : ""}>
+        <summary>Папки (${j.dirs.length}) — исключить ненужное</summary>
+        <div class="scroll"><table>
+          <tr><th>Папка</th><th class="num hide-sm">Файлов</th><th class="num">Размер</th><th class="num">Скачано</th><th></th></tr>
+          ${j.dirs.map(d => `<tr class="${d.excluded ? "excluded" : ""}">
+            <td class="path">${esc(d.top.slice(1))}${d.failed ? ` <span class="tag FILE">битых ${num(d.failed)}</span>` : ""}</td>
+            <td class="num hide-sm">${num(d.files)}</td><td class="num">${human(d.bytes)}</td>
+            <td class="num">${d.excluded ? "—" : Math.round(pct(d.done, d.bytes)) + "%"}</td>
+            <td class="num"><button data-act="${d.excluded ? "include" : "exclude"}" data-id="${j.id}" data-path="${esc(d.top)}">
+              ${d.excluded ? "↺ Вернуть" : "✕ Исключить"}</button></td></tr>`).join("")}
+        </table></div>
+      </details>` : ""}
+    </div>`;
+  }).join("") : `<div class="card empty">Пока пусто — вставь ссылку выше.</div>`;
+
+  $("active").innerHTML = s.active.length ? `<table>
+    <tr><th>Файл</th><th class="num">Скачано</th><th class="num">Скорость</th><th class="num hide-sm">Попытка</th></tr>
+    ${s.active.map(a => `<tr>
+      <td class="path">${esc(a.rel)}<div class="bar thin"><div class="done" style="width:${pct(a.done, a.size)}%"></div></div></td>
+      <td class="num">${human(a.done)} / ${human(a.size)}</td>
+      <td class="num">${a.stage === "verify" ? "сверяю md5…" : a.speed ? human(a.speed) + "/с" + (a.segments ? ` <span class="hint">×${a.segments}</span>` : "") : `ждём ${esc((a.host || "узел").replace(".storage.yandex.net", ""))}…`}</td>
+      <td class="num hide-sm">${a.attempt}</td></tr>`).join("")}</table>`
+    : `<div class="empty">${s.settings.paused ? "На паузе." : "Ничего не качается."}</div>`;
+
+  $("brokenCount").textContent = s.broken_total ? `(${num(s.broken_total)})` : "";
+  $("broken").innerHTML = s.broken.length ? `<table>
+    <tr><th>Тип</th><th>Путь</th><th class="num">Размер</th><th>Причина</th><th class="hide-sm">Ссылка</th></tr>
+    ${s.broken.map(b => `<tr>
+      <td><span class="tag ${esc(b.kind)}">${kindLabel[b.kind] || esc(b.kind)}</span>
+        ${b.preview ? `<span class="tag PREVIEW" title="Оригинал недоступен, сохранено превью 1280 px">превью ✓</span>` : ""}</td>
+      <td class="path">${esc(b.rel)}</td><td class="num">${human(b.size)}</td>
+      <td>${esc(b.reason)}</td><td class="hide-sm">${esc(b.job)}</td></tr>`).join("")}</table>`
+    : `<div class="empty">Битых нет.</div>`;
+}
+
+let rateSample = null, fpm = null;
+
+function renderScore(jobs) {
+  const sum = k => jobs.reduce((a, j) => a + (+j[k] || 0), 0);
+  const savedN = sum("files_ok"), savedB = sum("bytes_done");
+  const lostN = sum("files_failed"), lostB = sum("bytes_failed"), pvN = sum("files_preview");
+  // файлы в минуту: на мелочи МБ/с проседает, а реальный темп виден только так
+  const now = Date.now(), done = savedN + lostN;
+  if (rateSample && now - rateSample.t >= 10000) {
+    const inst = (done - rateSample.n) / ((now - rateSample.t) / 60000);
+    fpm = fpm == null ? inst : 0.6 * fpm + 0.4 * inst;
+    rateSample = {t: now, n: done};
+  } else if (!rateSample) rateSample = {t: now, n: done};
+  $("rate").textContent = fpm == null ? "— ф/мин" : `${num(Math.max(0, Math.round(fpm)))} ф/мин`;
+  const leftN = sum("files_left"), leftB = Math.max(0, sum("bytes_total") - savedB - lostB);
+  const more = jobs.some(j => j.walk_status !== "done") ? "+" : "";
+  const checkedN = savedN + lostN, checkedB = savedB + lostB;
+  const rate = (a, b) => b ? Math.round(a / b * 100) + "%" : "—";
+  const total = checkedN + leftN || 1;
+  const segs = [
+    ["saved", savedN, "спасено"], ["preview", pvN, "потеряно, есть превью"],
+    ["lost", lostN - pvN, "потеряно совсем"], ["left", leftN, "в очереди"],
+  ];
+  $("score").innerHTML = `
+    <div class="tiles">
+      <div><div class="tile-label"><span class="sw saved"></span>✓ Спасено</div>
+        <div class="tile-value">${num(savedN)}</div><div class="tile-sub">${human(savedB)}</div></div>
+      <div><div class="tile-label"><span class="sw lost"></span>✕ Потеряно</div>
+        <div class="tile-value">${num(lostN)}</div><div class="tile-sub">${human(lostB)} · из них с превью ${num(pvN)}</div></div>
+      <div><div class="tile-label"><span class="sw left"></span>⏳ В очереди</div>
+        <div class="tile-value">${num(leftN)}${more}</div><div class="tile-sub">${human(leftB)}${more}</div></div>
+      <div><div class="tile-label">Выживаемость</div>
+        <div class="tile-value">${rate(savedN, checkedN)}</div><div class="tile-sub">файлов · по объёму ${rate(savedB, checkedB)}</div></div>
+    </div>
+    <div class="stack" role="img" aria-label="Спасено ${savedN}, потеряно с превью ${pvN}, потеряно совсем ${lostN - pvN}, в очереди ${leftN}">
+      ${segs.filter(g => g[1] > 0).map(([cls, n, label]) =>
+        `<div class="seg ${cls}" style="flex:${n / total}" title="${label}: ${num(n)} (${Math.round(n / total * 100)}%)"></div>`).join("")}
+    </div>
+    <div class="legend">${segs.map(([cls, n, label]) =>
+      `<span><span class="sw ${cls}"></span>${label} ${num(n)}</span>`).join("")}</div>`;
+}
+
+async function tick() {
+  try { render(await (await fetch("/api/state")).json()); }
+  catch (e) { $("nas").innerHTML = `<span class="dot bad"></span>сервер не отвечает`; }
+}
+
+$("add").onclick = async () => {
+  const urls = $("urls").value;
+  if (!urls.trim()) return;
+  const res = await post("/api/jobs", {urls, subdir: $("subdir").value, priority: $("priority").checked});
+  $("addMsg").textContent = res.added.length ? `Добавлено ссылок: ${res.added.length}` : "Не нашёл ссылок на Яндекс.Диск";
+  if (res.added.length) $("urls").value = "";
+  tick();
+};
+$("workers").onchange = e => post("/api/settings", {workers: +e.target.value}).then(tick);
+$("pauseAll").onclick = () => post("/api/settings", {paused: !state?.settings.paused}).then(tick);
+$("jobs").onclick = e => {
+  const b = e.target.closest("button[data-act]");
+  if (b) post(`/api/jobs/${b.dataset.id}/${b.dataset.act}`, {path: b.dataset.path}).then(tick);
+};
+const openDirs = new Set();
+$("jobs").addEventListener("toggle", e => {
+  const id = +e.target.dataset.job;
+  if (id) e.target.open ? openDirs.add(id) : openDirs.delete(id);
+}, true);
+
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>
