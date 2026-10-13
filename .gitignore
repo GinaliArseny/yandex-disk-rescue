@@ -4,3 +4,6 @@ state.db*
 __pycache__/
 *.skill
 .DS_Store
+server.log
+console.log
+.state.json

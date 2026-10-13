@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(HERE, "state.db"))
+LOG_PATH = os.environ.get("LOG_PATH", os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "server.log"))
 # Место назначения выбирается в интерфейсе на каждую ссылку (NAS, внешний диск, этот компьютер);
 # NAS_ROOT — только подсказка по умолчанию.
 NAS_ROOT = os.environ.get("NAS_ROOT")
@@ -52,7 +53,7 @@ NAS_ERRNOS = {getattr(errno, n) for n in ("EACCES", "EPERM", "EROFS", "ENOSPC", 
 PREVIEW_SIZES = ("XXXL", "XXL", "XL", "L")  # 1280 px максимум; меньшие — если крупное не закэшировано
 PREVIEW_NONE, PREVIEW_SAVED, PREVIEW_NA, PREVIEW_BUSY = 0, 1, 2, 9
 
-settings = {"workers": 4, "paused": False}
+settings = {"workers": 16, "paused": False}
 live = {}                   # file_id → прогресс активной загрузки
 live_lock = threading.Lock()
 counter = {"bytes": 0, "speed": 0.0}
@@ -76,6 +77,11 @@ def x(sql, *args):
 
 def log(msg):
     print(time.strftime("%H:%M:%S"), msg, flush=True)
+    try:  # копия в файл — чтобы агент или человек мог посмотреть лог, не видя терминала
+        with open(LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+    except OSError:
+        pass
 
 
 def human(n):
@@ -585,7 +591,8 @@ def download(f):
             except http.client.HTTPException as e:  # IncompleteRead: обрыв посреди ответа, .part докачается
                 reason = f"Сеть ({entry['host'] or 'downloader'}): {e!r}"
             except urllib.error.HTTPError as e:
-                reason = f"HTTP {e.code} от узла {entry['host'] or 'downloader'}"
+                where = f"узла {entry['host']}" if entry["host"] else "сервиса скачивания Яндекса"
+                reason = f"HTTP {e.code} от {where}" + (" (временный сбой — повторится)" if e.code >= 500 else "")
                 if e.code == 416:
                     remove_quiet(part)
             except OSError as e:
@@ -732,6 +739,40 @@ def keep_awake_loop():
             or q("SELECT 1 FROM jobs WHERE walk_status IN ('pending', 'walking') LIMIT 1"))
         KEEP_AWAKE.set(busy)
         time.sleep(15)
+
+
+TRANSIENT = ("Сеть%", "API недоступен%", "ERROR%", "HTTP 5%")
+
+
+def requeue_transient():
+    """Вернуть в очередь файлы, упавшие по временным причинам (сеть, 5xx у Яндекса), — не битые файлы."""
+    cond = " OR ".join("reason LIKE ?" for _ in TRANSIENT)
+    with DBL:
+        cur = DB.execute(f"UPDATE files SET status='queued', attempts=0, reason=NULL,"
+                         f" preview = CASE WHEN preview = {PREVIEW_NA} THEN {PREVIEW_NONE} ELSE preview END"
+                         f" WHERE status='failed' AND ({cond})", TRANSIENT)
+        DB.commit()
+        return cur.rowcount
+
+
+def auto_retry_loop():
+    """Очередь опустела — один раз сами повторяем временные сбои. Новые ссылки или «Повторить битые»
+    взводят повтор заново (kv auto_retry_done=0)."""
+    while True:
+        time.sleep(30)
+        busy = (settings["paused"] or q("SELECT 1 FROM files WHERE status IN ('queued', 'active') LIMIT 1")
+                or q("SELECT 1 FROM jobs WHERE walk_status IN ('pending', 'walking') LIMIT 1"))
+        done = q("SELECT v FROM kv WHERE k='auto_retry_done'")
+        if busy or (done and done[0]["v"] == "1"):
+            continue
+        n = requeue_transient()
+        x("INSERT OR REPLACE INTO kv(k, v) VALUES('auto_retry_done', '1')")
+        if n:
+            log(f"очередь пуста — повторяю {n} файлов, упавших по временным причинам (сеть, сбой Яндекса)")
+
+
+def arm_auto_retry():
+    x("INSERT OR REPLACE INTO kv(k, v) VALUES('auto_retry_done', '0')")
 
 
 def sampler():
@@ -984,6 +1025,7 @@ def add_jobs(text, dest=None, priority=False, subdir=None):
     if error:
         return {"added": [], "error": error}
     x("INSERT OR REPLACE INTO kv(k, v) VALUES('last_dest', ?)", base)
+    arm_auto_retry()
     added = []
     for raw in LINK.findall(text or ""):
         url = raw.rstrip(".,;)»")
@@ -1075,6 +1117,7 @@ def job_action(job_id, action):
         x("DELETE FROM problems WHERE job_id=? AND kind='LIST_FAIL'", job_id)
         if paths:
             start_walk(job_id, paths)
+        arm_auto_retry()
         log(f"ссылка #{job_id}: битые отправлены на повтор")
     return {"ok": True}
 
@@ -1144,12 +1187,35 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, json.dumps(res, ensure_ascii=False))
 
 
+_db_lock = None
+
+
+def lock_db():
+    """Один сервер на одну базу: второй экземпляр на той же state.db перепутал бы очередь."""
+    global _db_lock
+    _db_lock = open(DB_PATH + ".lock", "w")
+    try:
+        import fcntl
+    except ImportError:
+        return  # Windows: защищает занятый порт
+    try:
+        fcntl.flock(_db_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit(f"База {DB_PATH} уже открыта другим экземпляром утилиты — второй не запускаю.")
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):  # консоль Windows не во всякой кодировке примет «→» и кириллицу
         try:
             stream.reconfigure(errors="replace")
         except (AttributeError, ValueError):
             pass
+    try:  # порт занимаем первым: если утилита уже запущена — выходим, не трогая очередь
+        server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    except OSError as e:
+        sys.exit(f"Порт {PORT} занят ({e.strerror}) — похоже, утилита уже запущена: открой http://localhost:{PORT}. "
+                 f"Второй экземпляр — только с другим PORT и своей папкой (DB_PATH).")
+    lock_db()
     init_db()
     for j in q("SELECT id FROM jobs WHERE walk_status != 'done'"):
         x("DELETE FROM problems WHERE job_id=? AND kind='LIST_FAIL'", j["id"])
@@ -1159,9 +1225,10 @@ def main():
     threading.Thread(target=sampler, daemon=True).start()
     threading.Thread(target=exporter, daemon=True).start()
     threading.Thread(target=keep_awake_loop, daemon=True).start()
+    threading.Thread(target=auto_retry_loop, daemon=True).start()
     places = ", ".join(f"{d['name']} ({'ok' if d['ok'] else d['error']})" for d in list_destinations())
-    log(f"Интерфейс: http://localhost:{PORT}  ·  куда можно качать: {places}")
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    log(f"Интерфейс: http://localhost:{PORT}  ·  куда можно качать: {places}  ·  лог: {LOG_PATH}")
+    server.serve_forever()
 
 
 if __name__ == "__main__":
