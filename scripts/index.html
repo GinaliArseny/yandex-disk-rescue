@@ -156,7 +156,7 @@
       <span class="pill" id="nas"><span class="dot"></span>место назначения</span>
       <span class="pill" id="speed">↓ —</span>
       <span class="pill" id="awake" hidden></span>
-      <span class="pill" id="rate" title="Обработано файлов в минуту (целые + битые)">— ф/мин</span>
+      <span class="pill" id="rate" title="Обработано файлов в минуту (скачанные + временно недоступные)">— ф/мин</span>
       <span class="pill" id="eta">осталось —</span>
       <label class="pill">потоков
         <select id="workers"><option>1</option><option>2</option><option>4</option><option>6</option>
@@ -175,7 +175,7 @@
       <button id="destRefresh" title="Пересканировать диски">↻</button>
       <label><input type="checkbox" id="priority"> ★ приоритет</label>
       <button class="primary" id="add">Качать</button>
-      <span class="hint" id="addMsg">Сначала идут файлы до 200 МБ (фото, документы), крупные — следом. Каждый файл сверяется по md5. Если оригинал фото не отдаётся — рядом кладётся превью 1280 px (<code>*.preview.jpg</code>), а файл остаётся в реестре битых.</span>
+      <span class="hint" id="addMsg">Сначала идут файлы до 200 МБ (фото, документы), крупные — следом. Каждый файл сверяется по md5. Если оригинал фото не отдаётся — рядом кладётся превью 1280 px (<code>*.preview.jpg</code>), как временная замена, а сам файл попадает в список временно недоступных.</span>
     </div>
   </section>
 
@@ -185,7 +185,7 @@
   <h2>Сейчас качается</h2>
   <div class="card scroll" id="active"></div>
 
-  <h2>Реестр битых <span id="brokenCount"></span> · <a href="/broken.tsv" download="broken.tsv">скачать TSV</a></h2>
+  <h2>Временно недоступные файлы <span id="brokenCount"></span> · <a href="/unavailable.tsv" download="unavailable.tsv">скачать TSV</a></h2>
   <div class="card scroll" id="broken"></div>
 </main>
 <footer>
@@ -243,7 +243,7 @@ function render(s) {
         <span class="job-name">${j.priority ? `<span class="star">★</span> ` : ""}${esc(j.name || (j.walk_status === "done" ? "ссылка не открылась" : "получаю список…"))}</span>
         <span class="job-sub">${esc(j.url)}</span>
         <span class="job-actions">
-          ${failedN ? `<button data-act="retry" data-id="${j.id}">↻ Повторить битые</button>` : ""}
+          ${failedN ? `<button data-act="retry" data-id="${j.id}">↻ Повторить недоступные</button>` : ""}
           <button data-act="${j.priority ? "unprioritize" : "prioritize"}" data-id="${j.id}">${j.priority ? "☆ Снять приоритет" : "★ В приоритет"}</button>
           <button data-act="${j.paused ? "resume" : "pause"}" data-id="${j.id}">${j.paused ? "▶ Продолжить" : "⏸ Пауза"}</button>
           <button data-act="move" data-id="${j.id}" data-base="${esc(j.base)}" title="Сменить место назначения">📁 Куда…</button>
@@ -260,7 +260,7 @@ function render(s) {
         <span>${human(j.bytes_done)} из ${human(j.bytes_total)}${j.walk_status !== "done" ? "+" : ""}</span>
         <span>файлов ${num(j.files_ok)} / ${num(j.files_total)}${j.walk_status !== "done" ? "+" : ""}</span>
         <span>в очереди ${num(j.files_left)}</span>
-        ${j.files_failed ? `<span class="bad">битых ${num(j.files_failed)}</span>` : ""}
+        ${j.files_failed ? `<span class="bad">временно недоступно ${num(j.files_failed)}</span>` : ""}
         ${j.files_preview ? `<span class="warn">из них с превью ${num(j.files_preview)}</span>` : ""}
         ${j.files_excluded ? `<span class="hint">исключено ${num(j.files_excluded)} ф., ${human(j.bytes_excluded)}</span>` : ""}
         ${j.problems ? `<span class="warn">замечаний ${num(j.problems)}</span>` : ""}
@@ -271,7 +271,7 @@ function render(s) {
         <div class="scroll"><table>
           <tr><th>Папка</th><th class="num hide-sm">Файлов</th><th class="num">Размер</th><th class="num">Скачано</th><th></th></tr>
           ${j.dirs.map(d => `<tr class="${d.excluded ? "excluded" : ""}">
-            <td class="path">${esc(d.top.slice(1))}${d.failed ? ` <span class="tag FILE">битых ${num(d.failed)}</span>` : ""}</td>
+            <td class="path">${esc(d.top.slice(1))}${d.failed ? ` <span class="tag FILE">недоступно ${num(d.failed)}</span>` : ""}</td>
             <td class="num hide-sm">${num(d.files)}</td><td class="num">${human(d.bytes)}</td>
             <td class="num">${d.excluded ? "—" : Math.round(pct(d.done, d.bytes)) + "%"}</td>
             <td class="num"><button data-act="${d.excluded ? "include" : "exclude"}" data-id="${j.id}" data-path="${esc(d.top)}">
@@ -295,10 +295,10 @@ function render(s) {
     <tr><th>Тип</th><th>Путь</th><th class="num">Размер</th><th>Причина</th><th class="hide-sm">Ссылка</th></tr>
     ${s.broken.map(b => `<tr>
       <td><span class="tag ${esc(b.kind)}">${kindLabel[b.kind] || esc(b.kind)}</span>
-        ${b.preview ? `<span class="tag PREVIEW" title="Оригинал недоступен, сохранено превью 1280 px">превью ✓</span>` : ""}</td>
+        ${b.preview ? `<span class="tag PREVIEW" title="Оригинал временно недоступен, сохранено превью до 1280 px">превью ✓</span>` : ""}</td>
       <td class="path">${esc(b.rel)}</td><td class="num">${human(b.size)}</td>
       <td>${esc(b.reason)}</td><td class="hide-sm">${esc(b.job)}</td></tr>`).join("")}</table>`
-    : `<div class="empty">Битых нет.</div>`;
+    : `<div class="empty">Временно недоступных файлов нет.</div>`;
 }
 
 let rateSample = null, fpm = null;
@@ -321,30 +321,31 @@ function renderScore(jobs) {
   const rate = (a, b) => b ? Math.round(a / b * 100) + "%" : "—";
   const total = checkedN + leftN || 1;
   const segs = [
-    ["saved", savedN, "спасено"], ["preview", pvN, "потеряно, есть превью"],
-    ["lost", lostN - pvN, "потеряно совсем"], ["left", leftN, "в очереди"],
+    ["saved", savedN, "скачано"], ["preview", pvN, "недоступно, сохранено превью"],
+    ["lost", lostN - pvN, "недоступно, без превью"], ["left", leftN, "в очереди"],
   ];
   const walking = jobs.some(j => j.walk_status !== "done");
   const finished = jobs.length && !leftN && !walking;
   const places = [...new Set(jobs.map(j => j.base))];
   $("score").innerHTML = `
     ${finished ? `<div class="done-banner">
-      <b>✓ Готово.</b> Спасено ${num(savedN)} файлов (${human(savedB)})${lostN ? `, не скачалось ${num(lostN)}` : ""}.
-      <div class="hint">Файлы: ${places.map(esc).join(", ")}.${lostN ? ` Список не скачанного с причинами — <code>_broken.tsv</code> в той же папке
-        и «Реестр битых» ниже. Для фото, где оригинал недоступен, рядом лежит превью <code>*.preview.jpg</code>.
-        Когда Яндекс починится — нажми «↻ Повторить битые» у ссылки: докачается только недостающее.` : ""}</div>
+      <b>✓ Готово.</b> Скачано ${num(savedN)} файлов (${human(savedB)})${lostN ? `, временно недоступно ${num(lostN)}` : ""}.
+      <div class="hint">Файлы: ${places.map(esc).join(", ")}.${lostN ? ` Список временно недоступных с причинами — <code>_unavailable.tsv</code> в той же папке
+        и раздел ниже. Для фото, чей оригинал сейчас не отдаётся, рядом сохранено превью <code>*.preview.jpg</code> —
+        как временная замена. Позже нажми «↻ Повторить недоступные» у ссылки: докачается только недостающее,
+        превью заменятся оригиналами.` : ""}</div>
     </div>` : ""}
     <div class="tiles">
-      <div><div class="tile-label"><span class="sw saved"></span>✓ Спасено</div>
+      <div><div class="tile-label"><span class="sw saved"></span>✓ Скачано</div>
         <div class="tile-value">${num(savedN)}</div><div class="tile-sub">${human(savedB)}</div></div>
-      <div><div class="tile-label"><span class="sw lost"></span>✕ Потеряно</div>
+      <div><div class="tile-label"><span class="sw lost"></span>Временно недоступно</div>
         <div class="tile-value">${num(lostN)}</div><div class="tile-sub">${human(lostB)} · из них с превью ${num(pvN)}</div></div>
       <div><div class="tile-label"><span class="sw left"></span>⏳ В очереди</div>
         <div class="tile-value">${num(leftN)}${more}</div><div class="tile-sub">${human(leftB)}${more}</div></div>
-      <div><div class="tile-label">Выживаемость</div>
-        <div class="tile-value grad">${rate(savedN, checkedN)}</div><div class="tile-sub">файлов · по объёму ${rate(savedB, checkedB)}</div></div>
+      <div><div class="tile-label">Доступно сейчас</div>
+        <div class="tile-value grad">${rate(savedN, checkedN)}</div><div class="tile-sub">из проверенных файлов · по объёму ${rate(savedB, checkedB)}</div></div>
     </div>
-    <div class="stack" role="img" aria-label="Спасено ${savedN}, потеряно с превью ${pvN}, потеряно совсем ${lostN - pvN}, в очереди ${leftN}">
+    <div class="stack" role="img" aria-label="Скачано ${savedN}, временно недоступно с превью ${pvN}, без превью ${lostN - pvN}, в очереди ${leftN}">
       ${segs.filter(g => g[1] > 0).map(([cls, n, label]) =>
         `<div class="seg ${cls}" style="flex:${n / total}" title="${label}: ${num(n)} (${Math.round(n / total * 100)}%)"></div>`).join("")}
     </div>

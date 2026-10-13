@@ -38,7 +38,7 @@ PORT = int(os.environ.get("PORT", "8765"))
 API = "https://cloud-api.yandex.net/v1/disk/public/resources"
 UA = {"User-Agent": "yadisk-backup/1.0"}
 CHUNK = 256 * 1024
-# Живые узлы отдают заголовки за 0.4–0.5 с (замер); битый файл не отвечает вовсе.
+# Узлы отдают заголовки за 0.4–0.5 с (замер); временно недоступный файл не отвечает вовсе.
 HEADERS_TIMEOUT = int(os.environ.get("HEADERS_TIMEOUT", "5"))
 STREAM_TIMEOUT = 30         # пауза посреди потока — обрыв, следующая попытка докачает с места
 MAX_ATTEMPTS = 3
@@ -133,7 +133,7 @@ class ApiError(Exception):
 
 
 class NasError(Exception):
-    """Запись на NAS не идёт — это не битый файл Яндекса, а повод встать на паузу."""
+    """Запись в место назначения не идёт — это не недоступность файла на Яндексе, а повод встать на паузу."""
 
 
 def is_nas_failure(e):
@@ -287,7 +287,7 @@ def start_walk(job_id, paths=None):
 # ---------- Скачивание ----------
 
 def claim():
-    """Сначала превью для битых (мелкие и быстрые), потом оригиналы из очереди."""
+    """Сначала превью для временно недоступных (мелкие и быстрые), потом оригиналы из очереди."""
     with DBL:
         row = DB.execute("""
             SELECT f.*, j.url, j.name, j.base, j.single FROM files f JOIN jobs j ON j.id = f.job_id
@@ -321,7 +321,7 @@ def preview_of(f, ext=".jpg"):
 
 
 def save_preview(f):
-    """Оригинал не отдаётся (узел хранилища мёртв), но превью раздаёт отдельный живой сервис."""
+    """Оригинал сейчас не отдаётся, а превью раздаёт отдельный сервис — сохраняем его как временную замену."""
     meta = api_get(API, public_key=f["url"], path=f["path"])
     if meta.get("media_type") != "image":
         return PREVIEW_NA, f"не фото ({meta.get('media_type')}) — превью бесполезно"
@@ -333,7 +333,7 @@ def save_preview(f):
                 data = r.read()
             break
         except urllib.error.HTTPError as e:
-            # 434 — превью так и не сгенерировали, а оригинал мёртв: взять не из чего
+            # 434 — превью для файла нет, а оригинал сейчас не отдаётся
             last_err = f"превью тоже недоступно (HTTP {e.code})"
     if data is None:
         return PREVIEW_NA, last_err
@@ -443,7 +443,7 @@ def _save_plan(part, size, segs, lock):
 
 
 def _fetch_segment(f, part, seg, entry, state):
-    """Качает bytes [seg.start + seg.done .. seg.end] в part по своему смещению; 2 попытки без прогресса — кусок мёртв."""
+    """Качает bytes [seg.start + seg.done .. seg.end] в part по своему смещению; 2 попытки без прогресса — кусок временно недоступен."""
     seg_len = seg[1] - seg[0] + 1
     idle = 0
     while seg[2] < seg_len:
@@ -480,7 +480,7 @@ def _fetch_segment(f, part, seg, entry, state):
         if seg[2] < seg_len:
             idle = idle + 1 if seg[2] == before else 0
             if idle >= 2:
-                state["dead"].append(seg)
+                state["unavailable"].append(seg)
                 return
             time.sleep(2)
 
@@ -492,16 +492,16 @@ def download_segmented(f, target, part, entry):
     entry["host"] = urllib.parse.urlparse(href).hostname
     entry["stage"] = "headers"
     with urllib.request.urlopen(urllib.request.Request(href, headers=dict(UA, Range="bytes=0-0")),
-                                timeout=HEADERS_TIMEOUT) as r:  # битый файл отсеется здесь за 5 с
+                                timeout=HEADERS_TIMEOUT) as r:  # недоступный файл отсеется здесь за 5 с
         try:
             r.read()
         except http.client.IncompleteRead:
-            return "failed", "PARTIAL: узел отдал заголовки, но ни байта данных — файл у Яндекса потерян"
+            return "failed", "NO_DATA: узел ответил, но не отдал данных — файл временно недоступен"
         if r.status != 206:
             return None
     entry["stage"] = "stream"
     segs = _load_plan(part, size)
-    state = {"lock": threading.Lock(), "dead": [], "errors": []}
+    state = {"lock": threading.Lock(), "unavailable": [], "errors": []}
     _save_plan(part, size, segs, state["lock"])  # план — до первого байта: .part с дырами без плана не бывает
     if not os.path.exists(part):
         open(part, "wb").close()
@@ -524,14 +524,14 @@ def download_segmented(f, target, part, entry):
     if state.get("nas_error"):
         raise NasError(state["nas_error"])
     _save_plan(part, size, segs, state["lock"])
-    unfinished = [s for s in segs if s[2] < s[1] - s[0] + 1 and s not in state["dead"]]
-    if unfinished and not state["dead"]:
+    unfinished = [s for s in segs if s[2] < s[1] - s[0] + 1 and s not in state["unavailable"]]
+    if unfinished and not state["unavailable"]:
         # поток куска упал непредвиденно — не трогаем .part, следующая попытка докачает по плану
         return "failed", f"ERROR: {len(unfinished)} кусков не докачано ({'; '.join(state['errors'][-2:])})"
-    if state["dead"]:
-        lost = sum(s[1] - s[0] + 1 - s[2] for s in state["dead"])
-        return "failed", (f"PARTIAL: {human(lost)} из {human(size)} не отдаётся, остальное лежит в .part"
-                          f" — «Повторить битые» докачает только недостающее")
+    if state["unavailable"]:
+        missing = sum(s[1] - s[0] + 1 - s[2] for s in state["unavailable"])
+        return "failed", (f"PARTIAL: {human(missing)} из {human(size)} временно недоступно, остальное лежит в .part"
+                          f" — «Повторить недоступные» докачает только недостающее")
     entry["stage"] = "verify"  # md5 по всему собранному файлу — гарантия, что куски легли правильно
     h = hashlib.md5()
     with open(part, "rb") as fh:
@@ -571,7 +571,7 @@ def download(f):
             except OSError as e:
                 if is_nas_failure(e):
                     raise NasError(e)
-                res = ("failed", f"NO_RESPONSE: узел {entry['host']} молчит по этому файлу > {HEADERS_TIMEOUT} с"
+                res = ("failed", f"NO_RESPONSE: узел {entry['host']} не отдал файл за {HEADERS_TIMEOUT} с — временно недоступен"
                        if is_timeout(e) and entry.get("stage") == "headers"
                        else f"Сеть ({entry['host'] or 'downloader'}): {e}")
             if res is not None:
@@ -599,10 +599,10 @@ def download(f):
                 if is_nas_failure(e):
                     raise NasError(e)
                 if is_timeout(e) and entry["stage"] == "headers":
-                    # узел жив (другие файлы отдаёт), но этот файл не отдаёт — умер его диск/реплика
-                    reason = f"NO_RESPONSE: узел {entry['host']} молчит по этому файлу > {HEADERS_TIMEOUT} с"
+                    # узел отвечает по другим файлам, а этот не отдаёт — файл временно недоступен
+                    reason = f"NO_RESPONSE: узел {entry['host']} не отдал файл за {HEADERS_TIMEOUT} с — временно недоступен"
                     # повтор почти не помогает (замер: 6 из 457 со 2-й попытки, 0 с 3-й) —
-                    # сразу в реестр, остаток подберёт «Повторить битые»
+                    # сразу в список, остаток подберёт «Повторить недоступные»
                     break
                 elif is_timeout(e) and entry["stage"] == "stream":
                     reason = f"STALL: поток с {entry['host']} замер > {STREAM_TIMEOUT} с"  # докачаем с места
@@ -611,8 +611,8 @@ def download(f):
                     reason = f"Сеть ({entry['host'] or 'downloader'}): {e}"
             else:
                 if got < size and got <= had:
-                    # докачка не дала ни байта: хвост файла у Яндекса потерян, повторять бесполезно
-                    reason = f"PARTIAL: отдаётся только {human(got)} из {human(size)}, начало лежит в .part"
+                    # докачка не дала ни байта: остаток файла сейчас не отдаётся, повторять сразу бесполезно
+                    reason = f"PARTIAL: отдаётся только {human(got)} из {human(size)}, остаток временно недоступен, начало лежит в .part"
                     break
                 if got != size:
                     reason = f"SIZE_MISMATCH: {got} вместо {size}"
@@ -623,7 +623,7 @@ def download(f):
                     remove_quiet(part)
                 else:
                     os.replace(part, target)
-                    for ext in PREVIEW_FORMATS.values():  # оригинал ожил — превью больше не нужно
+                    for ext in PREVIEW_FORMATS.values():  # оригинал снова доступен — превью больше не нужно
                         remove_quiet(preview_of(f, ext))
                     return "ok", None
             log(f"попытка {attempt}/{MAX_ATTEMPTS} не удалась: {f['rel']} ← {reason}")
@@ -689,7 +689,7 @@ def ensure_workers(n):
 
 class KeepAwake:
     """Не даём компьютеру уснуть, пока есть что качать; всё скачали или пауза — снова можно спать.
-    macOS: caffeinate -w (умрёт вместе с нами), Linux: systemd-inhibit, Windows: SetThreadExecutionState
+    macOS: caffeinate -w (завершится вместе с нами), Linux: systemd-inhibit, Windows: SetThreadExecutionState
     (действует на вызвавший поток, поэтому включаем и выключаем только из keep_awake_loop)."""
 
     def __init__(self):
@@ -745,7 +745,7 @@ TRANSIENT = ("Сеть%", "API недоступен%", "ERROR%", "HTTP 5%")
 
 
 def requeue_transient():
-    """Вернуть в очередь файлы, упавшие по временным причинам (сеть, 5xx у Яндекса), — не битые файлы."""
+    """Вернуть в очередь файлы, не скачанные из-за сбоев связи (сеть, 5xx у Яндекса)."""
     cond = " OR ".join("reason LIKE ?" for _ in TRANSIENT)
     with DBL:
         cur = DB.execute(f"UPDATE files SET status='queued', attempts=0, reason=NULL,"
@@ -756,7 +756,7 @@ def requeue_transient():
 
 
 def auto_retry_loop():
-    """Очередь опустела — один раз сами повторяем временные сбои. Новые ссылки или «Повторить битые»
+    """Очередь опустела — один раз сами повторяем временные сбои. Новые ссылки или «Повторить недоступные»
     взводят повтор заново (kv auto_retry_done=0)."""
     while True:
         time.sleep(30)
@@ -787,7 +787,7 @@ def sampler():
         prev, prev_t = cur, now
 
 
-# ---------- Реестр битых ----------
+# ---------- Список временно недоступных ----------
 
 def broken_rows(limit=None):
     sql = """
@@ -811,7 +811,7 @@ def broken_tsv():
 
 
 def exporter():
-    """Раз в 30 с кладёт реестр битых в каждое место назначения: <место>/_broken.tsv."""
+    """Раз в 30 с кладёт список временно недоступных в каждое место назначения: <место>/_unavailable.tsv."""
     last = None
     while True:
         time.sleep(30)
@@ -821,10 +821,10 @@ def exporter():
         for out_dir in {r["base"] for r in q("SELECT DISTINCT base FROM jobs")}:
             try:
                 if os.path.isdir(out_dir):
-                    tmp = os.path.join(out_dir, "._broken.tsv.tmp")
+                    tmp = os.path.join(out_dir, "._unavailable.tsv.tmp")
                     with open(tmp, "w", encoding="utf-8") as fh:
                         fh.write(data)
-                    os.replace(tmp, os.path.join(out_dir, "_broken.tsv"))
+                    os.replace(tmp, os.path.join(out_dir, "_unavailable.tsv"))
             except Exception as e:
                 log(f"не смог выгрузить реестр в {out_dir}: {e!r}")
         last = data
@@ -1118,7 +1118,7 @@ def job_action(job_id, action):
         if paths:
             start_walk(job_id, paths)
         arm_auto_retry()
-        log(f"ссылка #{job_id}: битые отправлены на повтор")
+        log(f"ссылка #{job_id}: временно недоступные отправлены на повтор")
     return {"ok": True}
 
 
@@ -1152,7 +1152,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/destinations":
             self.send(200, json.dumps({"destinations": list_destinations(), "default": default_dest()},
                                       ensure_ascii=False))
-        elif self.path == "/broken.tsv":
+        elif self.path in ("/unavailable.tsv", "/broken.tsv"):  # старый адрес — для совместимости
             self.send(200, broken_tsv(), "text/tab-separated-values; charset=utf-8")
         else:
             self.send(404, "{}")
