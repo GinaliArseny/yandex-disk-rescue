@@ -59,6 +59,10 @@
   .pill[hidden] { display: none; }
   .tag.PREVIEW { color: var(--ok); margin-top: 3px; }
   .star { color: var(--warn); }
+  .job-error { margin-top: 6px; padding: 8px 10px; border-radius: 8px; background: var(--bar); color: var(--bad); font-size: 13px; }
+  .done-banner { margin-bottom: 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--ok); line-height: 1.5; }
+  .done-banner b { color: var(--ok); }
+  .done-banner .hint { margin-top: 4px; }
   .score { margin-bottom: 14px; }
   .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px 20px; }
   .tile-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
@@ -164,14 +168,17 @@ function render(s) {
     const failedN = j.files_failed + j.problems;
     return `<div class="card">
       <div class="job-head">
-        <span class="job-name">${j.priority ? `<span class="star">★</span> ` : ""}${esc(j.name || "получаю список…")}</span>
+        <span class="job-name">${j.priority ? `<span class="star">★</span> ` : ""}${esc(j.name || (j.walk_status === "done" ? "ссылка не открылась" : "получаю список…"))}</span>
         <span class="job-sub">${esc(j.url)}</span>
         <span class="job-actions">
           ${failedN ? `<button data-act="retry" data-id="${j.id}">↻ Повторить битые</button>` : ""}
           <button data-act="${j.priority ? "unprioritize" : "prioritize"}" data-id="${j.id}">${j.priority ? "☆ Снять приоритет" : "★ В приоритет"}</button>
           <button data-act="${j.paused ? "resume" : "pause"}" data-id="${j.id}">${j.paused ? "▶ Продолжить" : "⏸ Пауза"}</button>
+          <button data-act="move" data-id="${j.id}" data-base="${esc(j.base)}" title="Сменить место назначения">📁 Куда…</button>
+          <button class="danger" data-act="delete" data-id="${j.id}" data-name="${esc(j.name || j.url)}" title="Убрать из списка">✕</button>
         </span>
       </div>
+      ${j.error ? `<div class="job-error">${esc(j.error)}</div>` : ""}
       <div class="job-sub">→ ${esc(j.dest)}${j.files_left && j.dest_free != null ? ` · свободно ${human(j.dest_free)}` : ""}
         ${j.dest_short ? ` <span class="bad">· может не хватить места: осталось скачать до ${human(j.bytes_left)} (часть отсеется как битое)</span>` : ""}
         ${j.files_left && !j.dest_ok ? ` <span class="bad">· ${esc(j.dest_error)}</span>` : ""}</div>
@@ -186,7 +193,6 @@ function render(s) {
         ${j.files_excluded ? `<span class="hint">исключено ${num(j.files_excluded)} ф., ${human(j.bytes_excluded)}</span>` : ""}
         ${j.problems ? `<span class="warn">замечаний ${num(j.problems)}</span>` : ""}
         <span class="hint">${walkLabel[j.walk_status] || j.walk_status} · папок ${num(j.walk_dirs)}${j.paused ? " · на паузе" : ""}</span>
-        ${j.error ? `<span class="bad">${esc(j.error)}</span>` : ""}
       </div>
       ${j.dirs.length ? `<details data-job="${j.id}" ${openDirs.has(j.id) ? "open" : ""}>
         <summary>Папки (${j.dirs.length}) — исключить ненужное</summary>
@@ -246,7 +252,16 @@ function renderScore(jobs) {
     ["saved", savedN, "спасено"], ["preview", pvN, "потеряно, есть превью"],
     ["lost", lostN - pvN, "потеряно совсем"], ["left", leftN, "в очереди"],
   ];
+  const walking = jobs.some(j => j.walk_status !== "done");
+  const finished = jobs.length && !leftN && !walking;
+  const places = [...new Set(jobs.map(j => j.base))];
   $("score").innerHTML = `
+    ${finished ? `<div class="done-banner">
+      <b>✓ Готово.</b> Спасено ${num(savedN)} файлов (${human(savedB)})${lostN ? `, не скачалось ${num(lostN)}` : ""}.
+      <div class="hint">Файлы: ${places.map(esc).join(", ")}.${lostN ? ` Список не скачанного с причинами — <code>_broken.tsv</code> в той же папке
+        и «Реестр битых» ниже. Для фото, где оригинал недоступен, рядом лежит превью <code>*.preview.jpg</code>.
+        Когда Яндекс починится — нажми «↻ Повторить битые» у ссылки: докачается только недостающее.` : ""}</div>
+    </div>` : ""}
     <div class="tiles">
       <div><div class="tile-label"><span class="sw saved"></span>✓ Спасено</div>
         <div class="tile-value">${num(savedN)}</div><div class="tile-sub">${human(savedB)}</div></div>
@@ -282,9 +297,20 @@ $("add").onclick = async () => {
 };
 $("workers").onchange = e => post("/api/settings", {workers: +e.target.value}).then(tick);
 $("pauseAll").onclick = () => post("/api/settings", {paused: !state?.settings.paused}).then(tick);
-$("jobs").onclick = e => {
+$("jobs").onclick = async e => {
   const b = e.target.closest("button[data-act]");
-  if (b) post(`/api/jobs/${b.dataset.id}/${b.dataset.act}`, {path: b.dataset.path}).then(tick);
+  if (!b) return;
+  const {id, act} = b.dataset;
+  let body = {path: b.dataset.path};
+  if (act === "delete" && !confirm(`Убрать «${b.dataset.name}» из списка?\n\nУже скачанные файлы останутся на диске, удаляется только запись здесь.`)) return;
+  if (act === "move") {
+    const dest = prompt("Куда качать эту ссылку дальше? Полный путь к папке.\nУже скачанное останется на старом месте.", b.dataset.base);
+    if (!dest || dest === b.dataset.base) return;
+    body = {dest};
+  }
+  const res = await post(`/api/jobs/${id}/${act}`, body);
+  if (res && res.error) alert(res.error);
+  tick();
 };
 const openDirs = new Set();
 $("jobs").addEventListener("toggle", e => {
@@ -297,7 +323,8 @@ let destList = [];
 async function loadDests() {
   const r = await (await fetch("/api/destinations")).json();
   destList = r.destinations;
-  const current = $("dest").value || r.default || (destList[0] && destList[0].suggested) || "";
+  const firstOk = destList.find(d => d.ok) || destList[0];  // не подсовываем место, куда писать нельзя
+  const current = $("dest").value || r.default || (firstOk && firstOk.suggested) || "";
   $("destSel").innerHTML = destList.map((d, i) =>
     `<option value="${i}" ${d.ok ? "" : "disabled"}>${kindLabel2[d.kind]} · ${esc(d.name)} — ${d.ok ? "свободно " + human(d.free) : esc(d.error)}</option>`).join("")
     + `<option value="other">Другая папка…</option>`;

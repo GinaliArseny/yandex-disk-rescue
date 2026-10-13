@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import socket
+import ssl
 import sqlite3
 import subprocess
 import threading
@@ -107,6 +108,8 @@ def init_db():
         row = DB.execute("SELECT v FROM kv WHERE k='workers'").fetchone()
         if row:
             settings["workers"] = int(row["v"])
+        row = DB.execute("SELECT v FROM kv WHERE k='paused'").fetchone()
+        settings["paused"] = bool(row and row["v"] == "1")
         if "preview" not in {r[1] for r in DB.execute("PRAGMA table_info(files)")}:
             DB.execute("ALTER TABLE files ADD COLUMN preview INTEGER DEFAULT 0")
         if "priority" not in {r[1] for r in DB.execute("PRAGMA table_info(jobs)")}:
@@ -127,13 +130,27 @@ class NasError(Exception):
 
 
 def is_nas_failure(e):
-    return (isinstance(e, OSError) and not isinstance(e, urllib.error.URLError)
-            and not isinstance(e, socket.timeout) and e.errno in NAS_ERRNOS)
+    # ssl.SSLError — тоже OSError, и его errno (1, 5) совпадает с EPERM/EIO: это обрыв TLS, а не диск
+    return (isinstance(e, OSError) and not isinstance(e, (urllib.error.URLError, socket.timeout, ssl.SSLError))
+            and e.errno in NAS_ERRNOS)
+
+
+def remove_quiet(path):
+    """Удалить, если есть: ENOENT здесь — не отвал диска, а уже убранный хвост."""
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def set_paused(paused):
+    settings["paused"] = paused
+    x("INSERT OR REPLACE INTO kv(k, v) VALUES('paused', ?)", "1" if paused else "0")
 
 
 def pause_for_nas(e):
     if not settings["paused"]:
-        settings["paused"] = True
+        set_paused(True)
         log(f"Место назначения не принимает запись ({e!r}) — ПАУЗА. Подключи диск/шару и нажми «Продолжить»")
 
 
@@ -199,6 +216,8 @@ def walk(job_id, start_paths=None):
     queue = collections.deque(start_paths or [None])
     try:
         while queue:
+            if not q("SELECT 1 FROM jobs WHERE id=?", job_id):
+                return  # ссылку удалили, пока шёл обход
             path = queue.popleft()
             if path and any(under(path, e) for e in excluded_paths(job_id)):
                 continue  # папку исключили — внутрь не ходим
@@ -209,6 +228,8 @@ def walk(job_id, start_paths=None):
                 except ApiError as e:
                     rel = (path or "/").lstrip("/") or "/"
                     add_problem(job_id, "LIST_FAIL", rel, path, 0, str(e))
+                    if path is None:
+                        x("UPDATE jobs SET error=? WHERE id=?", link_error_text(e), job_id)
                     log(f"папка не читается: {rel} ← {e}")
                     break
                 if path is None and offset == 0:
@@ -237,6 +258,13 @@ def walk(job_id, start_paths=None):
     except Exception as e:
         x("UPDATE jobs SET walk_status='failed', error=? WHERE id=?", repr(e), job_id)
         log(f"обход ссылки #{job_id} упал: {e!r}")
+
+
+def link_error_text(e):
+    if "NotFoundError" in str(e):  # DiskNotFoundError — снята с публикации, NotFoundError — опечатка в ссылке
+        return ("Ссылка не открывается: в ней опечатка, её сняли с публикации, перевыпустили или открыли только "
+                "приглашённым. Проверь доступ «Все, у кого есть ссылка» и добавь актуальную ссылку.")
+    return f"Корень ссылки не читается: {e}"
 
 
 def start_walk(job_id, paths=None):
@@ -408,8 +436,8 @@ def _fetch_segment(f, part, seg, entry, state):
     while seg[2] < seg_len:
         before = seg[2]
         try:
-            with SEG_SLOTS:
-                href = resolve(api_get(API + "/download", public_key=f["url"], path=f["path"])["href"])
+            href = resolve(api_get(API + "/download", public_key=f["url"], path=f["path"])["href"])
+            with SEG_SLOTS:  # слот — только на само соединение с узлом, не на ожидание API
                 req = urllib.request.Request(href, headers=dict(UA, Range=f"bytes={seg[0] + seg[2]}-{seg[1]}"))
                 with urllib.request.urlopen(req, timeout=HEADERS_TIMEOUT) as r:
                     if r.status != 206:
@@ -497,14 +525,13 @@ def download_segmented(f, target, part, entry):
         for chunk in iter(lambda: fh.read(4 * 1024 * 1024), b""):
             h.update(chunk)
     if os.path.getsize(part) != size or (f["md5"] and h.hexdigest() != f["md5"]):
-        os.remove(part)
-        os.remove(part + ".json")
+        remove_quiet(part)
+        remove_quiet(part + ".json")
         return "failed", "MD5_MISMATCH: собранный файл не совпал с Диском, будет скачан заново"
     os.replace(part, target)
-    os.remove(part + ".json")
+    remove_quiet(part + ".json")
     for ext in PREVIEW_FORMATS.values():
-        if os.path.exists(preview_of(f, ext)):
-            os.remove(preview_of(f, ext))
+        remove_quiet(preview_of(f, ext))
     return "ok", None
 
 
@@ -537,8 +564,8 @@ def download(f):
             if res is not None:
                 return res
             if os.path.exists(part + ".json"):  # узел перестал понимать Range — куски с дырами не докачать потоком
-                os.remove(part)
-                os.remove(part + ".json")
+                remove_quiet(part)
+                remove_quiet(part + ".json")
         for attempt in range(1, MAX_ATTEMPTS + 1):
             entry.update(attempt=attempt, speed=0.0, host=None, stage=None)
             x("UPDATE files SET attempts=attempts+1 WHERE id=?", f["id"])
@@ -552,8 +579,8 @@ def download(f):
                 reason = f"Сеть ({entry['host'] or 'downloader'}): {e!r}"
             except urllib.error.HTTPError as e:
                 reason = f"HTTP {e.code} от узла {entry['host'] or 'downloader'}"
-                if e.code == 416 and os.path.exists(part):
-                    os.remove(part)
+                if e.code == 416:
+                    remove_quiet(part)
             except OSError as e:
                 if is_nas_failure(e):
                     raise NasError(e)
@@ -576,15 +603,14 @@ def download(f):
                 if got != size:
                     reason = f"SIZE_MISMATCH: {got} вместо {size}"
                     if got > size:
-                        os.remove(part)
+                        remove_quiet(part)
                 elif f["md5"] and md5 != f["md5"]:
                     reason = "MD5_MISMATCH: содержимое не совпало с Диском"
-                    os.remove(part)
+                    remove_quiet(part)
                 else:
                     os.replace(part, target)
                     for ext in PREVIEW_FORMATS.values():  # оригинал ожил — превью больше не нужно
-                        if os.path.exists(preview_of(f, ext)):
-                            os.remove(preview_of(f, ext))
+                        remove_quiet(preview_of(f, ext))
                     return "ok", None
             log(f"попытка {attempt}/{MAX_ATTEMPTS} не удалась: {f['rel']} ← {reason}")
             if attempt < MAX_ATTEMPTS:
@@ -843,22 +869,39 @@ def state():
 LINK = re.compile(r"(?:https?://)?(?:disk\.yandex\.[a-z]+|disk\.360\.yandex\.[a-z]+|yadi\.sk)/[^\s<>\"']+")
 
 
+def check_dest(dest, timeout=10):
+    """Путь полный, папка создаётся и в неё пишется. Проверка — в отдельном потоке: на зависшей шаре
+    makedirs висит в ядре, а кнопка «Качать» должна ответить."""
+    base = os.path.normpath(os.path.expanduser((dest or "").strip()))
+    if not dest or not os.path.isabs(base):
+        return None, f"Нужен полный путь к папке, а не «{dest or ''}»"
+    result = {}
+
+    def attempt():
+        try:
+            os.makedirs(base, exist_ok=True)
+            probe = os.path.join(base, f".write_test_{threading.get_ident()}")
+            with open(probe, "w") as fh:
+                fh.write("ok")
+            os.remove(probe)
+        except OSError as e:
+            result["error"] = f"Не могу писать в {base}: {e.strerror or e}"
+
+    t = threading.Thread(target=attempt, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return None, f"{base} не отвечает — диск или шара отвалились?"
+    return (None, result["error"]) if "error" in result else (base, None)
+
+
 def add_jobs(text, dest=None, priority=False, subdir=None):
-    """dest — абсолютный путь, куда класть (выбор пользователя); subdir — старый вариант API относительно NAS_ROOT."""
+    """dest — полный путь, куда класть (выбор пользователя); subdir — старый вариант API относительно NAS_ROOT."""
     if not dest:
-        root = NAS_ROOT or os.path.expanduser("~")
-        dest = os.path.join(root, safe_rel(subdir or "") or DEFAULT_SUBDIR)
-    base = os.path.normpath(os.path.expanduser(dest.strip()))
-    if not os.path.isabs(base):
-        return {"added": [], "error": f"Нужен полный путь к папке, а не «{dest}»"}
-    try:
-        os.makedirs(base, exist_ok=True)
-        probe = os.path.join(base, ".write_test")
-        with open(probe, "w") as fh:
-            fh.write("ok")
-        os.remove(probe)
-    except OSError as e:
-        return {"added": [], "error": f"Не могу писать в {base}: {e.strerror or e}"}
+        dest = os.path.join(NAS_ROOT or os.path.expanduser("~"), safe_rel(subdir or "") or DEFAULT_SUBDIR)
+    base, error = check_dest(dest)
+    if error:
+        return {"added": [], "error": error}
     x("INSERT OR REPLACE INTO kv(k, v) VALUES('last_dest', ?)", base)
     added = []
     for raw in LINK.findall(text or ""):
@@ -910,6 +953,31 @@ def top_dirs(job_id):
     for r in rows:
         r["excluded"] = r["top"] in excl
     return rows
+
+
+def move_job(job_id, dest):
+    """Сменить место назначения. Уже скачанное остаётся в старом месте, остальное пойдёт в новое."""
+    base, error = check_dest(dest)
+    if error:
+        return {"ok": False, "error": error}
+    with DBL:
+        name = q("SELECT name FROM jobs WHERE id=?", job_id)[0]["name"]
+        if name and q("SELECT 1 FROM jobs WHERE id != ? AND name = ? AND base = ?", job_id, name, base):
+            x("UPDATE jobs SET name=? WHERE id=?", f"{name} ({job_id})", job_id)
+        x("UPDATE jobs SET base=? WHERE id=?", base, job_id)
+    log(f"ссылка #{job_id}: место назначения → {base}")
+    return {"ok": True}
+
+
+def delete_job(job_id):
+    """Убрать ссылку из списка. Файлы на диске не трогаем — только записи в базе."""
+    with DBL:
+        for table in ("files", "problems", "excludes"):
+            DB.execute(f"DELETE FROM {table} WHERE job_id=?", (job_id,))
+        DB.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        DB.commit()
+    log(f"ссылка #{job_id} удалена из списка (файлы на диске остались)")
+    return {"ok": True}
 
 
 def job_action(job_id, action):
@@ -970,11 +1038,16 @@ class Handler(BaseHTTPRequestHandler):
         if not self.local_host() or not (self.headers.get("Content-Type") or "").startswith("application/json"):
             return self.send(403, "{}")
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-        m = re.fullmatch(r"/api/jobs/(\d+)/(pause|resume|retry|exclude|include|prioritize|unprioritize)", self.path)
+        m = re.fullmatch(r"/api/jobs/(\d+)/(pause|resume|retry|exclude|include|prioritize|unprioritize|move|delete)",
+                         self.path)
         if self.path == "/api/jobs":
             res = add_jobs(body.get("urls"), body.get("dest"), bool(body.get("priority")), body.get("subdir"))
         elif m and m[2] in ("exclude", "include"):
             res = set_excluded(int(m[1]), body.get("path"), m[2] == "exclude")
+        elif m and m[2] == "move":
+            res = move_job(int(m[1]), body.get("dest"))
+        elif m and m[2] == "delete":
+            res = delete_job(int(m[1]))
         elif m:
             res = job_action(int(m[1]), m[2])
         elif self.path == "/api/settings":
@@ -983,7 +1056,7 @@ class Handler(BaseHTTPRequestHandler):
                 x("INSERT OR REPLACE INTO kv(k, v) VALUES('workers', ?)", str(settings["workers"]))
                 ensure_workers(settings["workers"])
             if "paused" in body:
-                settings["paused"] = bool(body["paused"])
+                set_paused(bool(body["paused"]))
             res = settings
         else:
             return self.send(404, "{}")
